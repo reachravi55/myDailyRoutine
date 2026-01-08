@@ -20,8 +20,8 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      # Use Gradle directly (no wrapper needed)
       - name: Setup Gradle
+      # Gradle is installed in the runner, no wrapper needed
         uses: gradle/gradle-build-action@v3
         with:
           gradle-version: 8.4
