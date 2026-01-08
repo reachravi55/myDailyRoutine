@@ -13,8 +13,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardOptions
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.reachravi55.mydailyroutine.data.DateUtils
 import com.reachravi55.mydailyroutine.data.Ids
@@ -57,8 +55,12 @@ fun TaskEditorScreen(
 
     var notesEnabled by rememberSaveable { mutableStateOf(existing?.notesEnabled ?: true) }
 
-    var freq by rememberSaveable { mutableStateOf(existing?.repeatRule?.frequency ?: RepeatRule.Frequency.DAILY) }
-    var interval by rememberSaveable { mutableStateOf((existing?.repeatRule?.interval ?: 1).coerceAtLeast(1)) }
+    var freq by rememberSaveable {
+        mutableStateOf(existing?.repeatRule?.frequency ?: RepeatRule.Frequency.DAILY)
+    }
+    var intervalText by rememberSaveable {
+        mutableStateOf(((existing?.repeatRule?.interval ?: 1).coerceAtLeast(1)).toString())
+    }
 
     val reminders = remember { mutableStateListOf<Reminder>() }.apply {
         if (isEmpty()) {
@@ -67,7 +69,6 @@ fun TaskEditorScreen(
         }
     }
 
-    // If creating brand-new and empty reminders, seed one
     LaunchedEffect(existing?.id) {
         if (existing == null && reminders.isEmpty()) {
             reminders.add(
@@ -88,8 +89,11 @@ fun TaskEditorScreen(
 
     fun doSave() {
         if (!canSave) return
+
         scope.launch {
             val taskId = existing?.id ?: Ids.id()
+
+            val interval = intervalText.toIntOrNull()?.coerceAtLeast(1) ?: 1
             val rr = RepeatRule.newBuilder()
                 .setFrequency(freq)
                 .setInterval(interval)
@@ -141,7 +145,6 @@ fun TaskEditorScreen(
             )
         },
         bottomBar = {
-            // Always-visible Save so user never feels “stuck”
             Surface(tonalElevation = 3.dp) {
                 Row(
                     modifier = Modifier
@@ -153,6 +156,7 @@ fun TaskEditorScreen(
                         onClick = onDone,
                         modifier = Modifier.weight(1f)
                     ) { Text("Cancel") }
+
                     Button(
                         onClick = { doSave() },
                         enabled = canSave,
@@ -219,7 +223,6 @@ fun TaskEditorScreen(
                 onValueChange = { startDate = it },
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("Start date (YYYY-MM-DD)") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 singleLine = true
             )
 
@@ -227,9 +230,9 @@ fun TaskEditorScreen(
 
             RepeatPicker(
                 freq = freq,
-                interval = interval,
+                intervalText = intervalText,
                 onFreq = { freq = it },
-                onInterval = { interval = it.coerceAtLeast(1) }
+                onIntervalText = { intervalText = it }
             )
 
             Spacer(Modifier.height(12.dp))
@@ -299,9 +302,9 @@ private fun ListPicker(
 @Composable
 private fun RepeatPicker(
     freq: RepeatRule.Frequency,
-    interval: Int,
+    intervalText: String,
     onFreq: (RepeatRule.Frequency) -> Unit,
-    onInterval: (Int) -> Unit
+    onIntervalText: (String) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
     val label = when (freq) {
@@ -350,12 +353,11 @@ private fun RepeatPicker(
         }
 
         OutlinedTextField(
-            value = interval.toString(),
-            onValueChange = { v -> onInterval(v.toIntOrNull() ?: 1) },
+            value = intervalText,
+            onValueChange = { onIntervalText(it.filter { ch -> ch.isDigit() }.take(2)) },
             label = { Text("Every") },
             modifier = Modifier.width(110.dp),
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            singleLine = true
         )
     }
 
@@ -386,24 +388,22 @@ private fun ReminderRow(
                 OutlinedTextField(
                     value = reminder.hour.toString().padStart(2, '0'),
                     onValueChange = { v ->
-                        val h = v.toIntOrNull()?.coerceIn(0, 23) ?: 0
+                        val h = v.filter { it.isDigit() }.toIntOrNull()?.coerceIn(0, 23) ?: 0
                         onChange(reminder.toBuilder().setHour(h).build())
                     },
                     label = { Text("HH") },
                     singleLine = true,
-                    modifier = Modifier.weight(1f),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    modifier = Modifier.weight(1f)
                 )
                 OutlinedTextField(
                     value = reminder.minute.toString().padStart(2, '0'),
                     onValueChange = { v ->
-                        val m = v.toIntOrNull()?.coerceIn(0, 59) ?: 0
+                        val m = v.filter { it.isDigit() }.toIntOrNull()?.coerceIn(0, 59) ?: 0
                         onChange(reminder.toBuilder().setMinute(m).build())
                     },
                     label = { Text("MM") },
                     singleLine = true,
-                    modifier = Modifier.weight(1f),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    modifier = Modifier.weight(1f)
                 )
                 Column(Modifier.weight(1f)) {
                     Text("Enabled", style = MaterialTheme.typography.labelLarge)
