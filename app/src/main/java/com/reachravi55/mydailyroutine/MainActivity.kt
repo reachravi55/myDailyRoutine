@@ -38,9 +38,9 @@ import java.util.Date
 import java.util.Locale
 
 // ---------- DataStore ----------
-private val Context.dataStore by preferencesDataStore(name = "routine_prefs")
+val Context.dataStore by preferencesDataStore(name = "routine_prefs")
 
-private object PrefKeys {
+object PrefKeys {
     val completedItems: Preferences.Key<Set<String>> = stringSetPreferencesKey("completed_items")
     val itemNotes: Preferences.Key<Set<String>> = stringSetPreferencesKey("item_notes")
     val seenOnboarding: Preferences.Key<Boolean> = booleanPreferencesKey("seen_onboarding")
@@ -69,7 +69,7 @@ data class RoutinePrefs(
     val seenOnboarding: Boolean = false
 )
 
-// Encode / decode notes as "label|||note" so we can store in a Set<String>
+// Encode / decode notes as "label|||note"
 private fun decodeNotes(set: Set<String>): Map<String, String> =
     set.mapNotNull { raw ->
         val idx = raw.indexOf("|||")
@@ -142,43 +142,85 @@ suspend fun setItemNote(context: Context, label: String, note: String) {
 }
 
 // ---------- Alarms ----------
+
 private const val MORNING_REQ = 101
 private const val AFTERNOON_REQ = 102
 private const val EVENING_REQ = 103
 
+// Schedules a SINGLE exact alarm for each reminder (receiver will re-schedule for next day)
 fun scheduleAllReminders(context: Context, settings: ReminderSettings) {
+    scheduleExactReminder(
+        context = context,
+        hour = settings.morningHour,
+        minute = settings.morningMinute,
+        requestCode = MORNING_REQ,
+        title = "Morning routine",
+        reminderType = "morning"
+    )
+    scheduleExactReminder(
+        context = context,
+        hour = settings.afternoonHour,
+        minute = settings.afternoonMinute,
+        requestCode = AFTERNOON_REQ,
+        title = "Afternoon routine",
+        reminderType = "afternoon"
+    )
+    scheduleExactReminder(
+        context = context,
+        hour = settings.eveningHour,
+        minute = settings.eveningMinute,
+        requestCode = EVENING_REQ,
+        title = "Evening routine",
+        reminderType = "evening"
+    )
+}
+
+fun scheduleExactReminder(
+    context: Context,
+    hour: Int,
+    minute: Int,
+    requestCode: Int,
+    title: String,
+    reminderType: String
+) {
     val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
-    fun scheduleOne(hour: Int, minute: Int, req: Int, title: String) {
-        val intent = Intent(context, ReminderReceiver::class.java).apply {
-            putExtra("title", title)
-        }
+    val intent = Intent(context, ReminderReceiver::class.java).apply {
+        putExtra("title", title)
+        putExtra("reminderType", reminderType)
+        putExtra("hour", hour)
+        putExtra("minute", minute)
+    }
 
-        val pending = PendingIntent.getBroadcast(
-            context, req, intent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
+    val pending = PendingIntent.getBroadcast(
+        context,
+        requestCode,
+        intent,
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    )
 
-        val now = Calendar.getInstance()
-        val cal = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, hour)
-            set(Calendar.MINUTE, minute)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-            if (before(now)) add(Calendar.DAY_OF_MONTH, 1)
-        }
+    val now = Calendar.getInstance()
+    val cal = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, hour)
+        set(Calendar.MINUTE, minute)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+        if (before(now)) add(Calendar.DAY_OF_MONTH, 1)
+    }
 
-        alarmManager.setInexactRepeating(
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        alarmManager.setExactAndAllowWhileIdle(
             AlarmManager.RTC_WAKEUP,
             cal.timeInMillis,
-            AlarmManager.INTERVAL_DAY,
+            pending
+        )
+    } else {
+        alarmManager.setExact(
+            AlarmManager.RTC_WAKEUP,
+            cal.timeInMillis,
             pending
         )
     }
-
-    scheduleOne(settings.morningHour, settings.morningMinute, MORNING_REQ, "Morning routine")
-    scheduleOne(settings.afternoonHour, settings.afternoonMinute, AFTERNOON_REQ, "Afternoon routine")
-    scheduleOne(settings.eveningHour, settings.eveningMinute, EVENING_REQ, "Evening routine")
 }
 
 // helper to trigger ReminderReceiver immediately (for testing)
@@ -458,10 +500,8 @@ fun SectionCard(
                 val checked = completed.contains(label)
                 val persistedNote = notesFromPrefs[label] ?: ""
 
-                // Local state for the note text to avoid cursor jumping
                 var localNote by remember(label) { mutableStateOf(persistedNote) }
 
-                // Keep local in sync if prefs change
                 LaunchedEffect(persistedNote) {
                     if (persistedNote != localNote) {
                         localNote = persistedNote
