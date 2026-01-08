@@ -17,7 +17,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -25,30 +24,6 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-
-// ---------- Data models ----------
-
-data class Task(
-    val id: Long,
-    val title: String,
-    val isDone: Boolean
-)
-
-enum class RepeatInterval(val label: String) {
-    DAILY("Daily"),
-    WEEKLY("Weekly"),
-    MONTHLY("Monthly"),
-    YEARLY("Yearly")
-}
-
-data class Reminder(
-    val id: Int,
-    val hour: Int,
-    val minute: Int,
-    val repeat: RepeatInterval
-)
-
-// ---------- Activity ----------
 
 class MainActivity : ComponentActivity() {
 
@@ -65,437 +40,320 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
 
+        // Schedule fixed reminders for your dad
+        scheduleReminders()
+
         setContent {
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    DailyRoutineApp()
-                }
-            }
+            MyDailyRoutineApp()
         }
     }
-}
 
-// ---------- Composable root ----------
+    private fun scheduleReminders() {
+        // Morning – 7:00 AM
+        schedule(7, 0, 101, "Morning routine")
 
-@Composable
-fun DailyRoutineApp() {
-    val context = LocalContext.current
+        // Afternoon – 12:00 PM
+        schedule(12, 0, 102, "Afternoon routine")
 
-    // Load saved data (and reset checkmarks if day changed)
-    var tasks by remember { mutableStateOf(loadTasks(context)) }
-    var reminders by remember { mutableStateOf(loadReminders(context)) }
-
-    // Whenever reminders change, reschedule all alarms + persist
-    LaunchedEffect(reminders) {
-        saveReminders(context, reminders)
-        scheduleAllReminders(context, reminders)
+        // Evening – 7:00 PM
+        schedule(19, 0, 103, "Evening routine")
     }
 
-    DailyRoutineScreen(
-        tasks = tasks,
-        reminders = reminders,
-        onTasksChange = { newTasks ->
-            tasks = newTasks
-            saveTasks(context, newTasks)
-        },
-        onRemindersChange = { newReminders ->
-            reminders = newReminders
-        }
-    )
-}
-
-// ---------- UI ----------
-
-@Composable
-fun DailyRoutineScreen(
-    tasks: List<Task>,
-    reminders: List<Reminder>,
-    onTasksChange: (List<Task>) -> Unit,
-    onRemindersChange: (List<Reminder>) -> Unit
-) {
-    var newTaskTitle by remember { mutableStateOf("") }
-
-    // For adding a reminder
-    var newHour by remember { mutableStateOf("") }
-    var newMinute by remember { mutableStateOf("") }
-    var repeatExpanded by remember { mutableStateOf(false) }
-    var selectedRepeat by remember { mutableStateOf(RepeatInterval.DAILY) }
-    var reminderError by remember { mutableStateOf<String?>(null) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-
-        // ----- Tasks section -----
-        Text(
-            text = "My Daily Tasks",
-            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold)
-        )
-
-        Spacer(Modifier.height(8.dp))
-
-        // Add new task row (like Google Tasks / Keep)
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            OutlinedTextField(
-                value = newTaskTitle,
-                onValueChange = { newTaskTitle = it },
-                label = { Text("Add a task") },
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(Modifier.width(8.dp))
-            Button(
-                onClick = {
-                    if (newTaskTitle.isNotBlank()) {
-                        val nextId = (tasks.maxOfOrNull { it.id } ?: 0L) + 1L
-                        val updated = tasks + Task(nextId, newTaskTitle.trim(), false)
-                        onTasksChange(updated)
-                        newTaskTitle = ""
-                    }
-                }
-            ) {
-                Text("Add")
-            }
+    private fun schedule(h: Int, m: Int, code: Int, title: String) {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(this, ReminderReceiver::class.java).apply {
+            putExtra("title", title)
         }
 
-        Spacer(Modifier.height(12.dp))
-
-        // Task list
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-        ) {
-            items(tasks, key = { it.id }) { task ->
-                TaskRow(
-                    task = task,
-                    onToggle = { checked ->
-                        val updated = tasks.map {
-                            if (it.id == task.id) it.copy(isDone = checked) else it
-                        }
-                        onTasksChange(updated)
-                    },
-                    onDelete = {
-                        val updated = tasks.filterNot { it.id == task.id }
-                        onTasksChange(updated)
-                    }
-                )
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        Button(
-            onClick = {
-                // Reset progress for today (keep tasks)
-                val reset = tasks.map { it.copy(isDone = false) }
-                onTasksChange(reset)
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Clear progress for today")
-        }
-
-        Spacer(Modifier.height(18.dp))
-
-        // ----- Reminders section -----
-        Text(
-            text = "Reminders",
-            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-        )
-
-        Spacer(Modifier.height(8.dp))
-
-        // Existing reminders list
-        if (reminders.isEmpty()) {
-            Text("No reminders set yet.")
-        } else {
-            reminders.forEach { reminder ->
-                ReminderRow(
-                    reminder = reminder,
-                    onDelete = {
-                        val updated = reminders.filterNot { it.id == reminder.id }
-                        onRemindersChange(updated)
-                    }
-                )
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        // Add reminder controls
-        Text(text = "Add reminder", style = MaterialTheme.typography.bodyLarge)
-        Spacer(Modifier.height(4.dp))
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = newHour,
-                onValueChange = { newHour = it.filter { ch -> ch.isDigit() }.take(2) },
-                label = { Text("Hour (0-23)") },
-                modifier = Modifier.width(120.dp)
-            )
-            Spacer(Modifier.width(8.dp))
-            OutlinedTextField(
-                value = newMinute,
-                onValueChange = { newMinute = it.filter { ch -> ch.isDigit() }.take(2) },
-                label = { Text("Min (0-59)") },
-                modifier = Modifier.width(120.dp)
-            )
-            Spacer(Modifier.width(8.dp))
-
-            Box {
-                OutlinedButton(onClick = { repeatExpanded = true }) {
-                    Text(selectedRepeat.label)
-                }
-                DropdownMenu(
-                    expanded = repeatExpanded,
-                    onDismissRequest = { repeatExpanded = false }
-                ) {
-                    RepeatInterval.values().forEach { option ->
-                        DropdownMenuItem(
-                            text = { Text(option.label) },
-                            onClick = {
-                                selectedRepeat = option
-                                repeatExpanded = false
-                            }
-                        )
-                    }
-                }
-            }
-        }
-
-        Spacer(Modifier.height(4.dp))
-
-        reminderError?.let {
-            Text(it, color = MaterialTheme.colorScheme.error)
-            Spacer(Modifier.height(4.dp))
-        }
-
-        Button(
-            onClick = {
-                val h = newHour.toIntOrNull()
-                val m = newMinute.toIntOrNull()
-                if (h == null || m == null || h !in 0..23 || m !in 0..59) {
-                    reminderError = "Please enter a valid time."
-                } else {
-                    reminderError = null
-                    val nextId = (reminders.maxOfOrNull { it.id } ?: 0) + 1
-                    val newReminder = Reminder(
-                        id = nextId,
-                        hour = h,
-                        minute = m,
-                        repeat = selectedRepeat
-                    )
-                    val updated = reminders + newReminder
-                    onRemindersChange(updated)
-                    newHour = ""
-                    newMinute = ""
-                }
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Add reminder")
-        }
-    }
-}
-
-@Composable
-fun TaskRow(
-    task: Task,
-    onToggle: (Boolean) -> Unit,
-    onDelete: () -> Unit
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp)
-    ) {
-        Checkbox(
-            checked = task.isDone,
-            onCheckedChange = onToggle
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = task.title,
-            style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.weight(1f)
-        )
-        TextButton(onClick = onDelete) {
-            Text("Delete")
-        }
-    }
-}
-
-@Composable
-fun ReminderRow(
-    reminder: Reminder,
-    onDelete: () -> Unit
-) {
-    val timeText = String.format("%02d:%02d", reminder.hour, reminder.minute)
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-    ) {
-        Text(
-            text = "$timeText · ${reminder.repeat.label}",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.weight(1f)
-        )
-        TextButton(onClick = onDelete) {
-            Text("Delete")
-        }
-    }
-}
-
-// ---------- Persistence (SharedPreferences) ----------
-
-private const val PREFS_NAME = "daily_routine_prefs"
-private const val KEY_TASKS = "tasks"
-private const val KEY_LAST_RESET_DATE = "last_reset_date"
-private const val KEY_REMINDERS = "reminders"
-
-private fun todayString(): String {
-    val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-    return sdf.format(Date())
-}
-
-private fun loadTasks(context: Context): List<Task> {
-    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    val storedDate = prefs.getString(KEY_LAST_RESET_DATE, null)
-    val today = todayString()
-    val raw = prefs.getString(KEY_TASKS, null)
-
-    var tasks = parseTasks(raw)
-
-    // If date changed, clear checkmarks but keep tasks
-    if (storedDate != today) {
-        tasks = tasks.map { it.copy(isDone = false) }
-        prefs.edit()
-            .putString(KEY_LAST_RESET_DATE, today)
-            .putString(KEY_TASKS, serializeTasks(tasks))
-            .apply()
-    }
-
-    // If first run and no tasks, start empty list (or add sample)
-    return tasks
-}
-
-private fun saveTasks(context: Context, tasks: List<Task>) {
-    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    prefs.edit()
-        .putString(KEY_TASKS, serializeTasks(tasks))
-        .apply()
-}
-
-private fun parseTasks(raw: String?): List<Task> {
-    if (raw.isNullOrBlank()) return emptyList()
-    return raw.lines()
-        .filter { it.isNotBlank() }
-        .mapNotNull { line ->
-            val parts = line.split("::")
-            if (parts.size != 3) return@mapNotNull null
-            val id = parts[0].toLongOrNull() ?: return@mapNotNull null
-            val title = parts[1]
-            val done = parts[2] == "1"
-            Task(id, title, done)
-        }
-}
-
-private fun serializeTasks(tasks: List<Task>): String {
-    return tasks.joinToString("\n") { t ->
-        val doneFlag = if (t.isDone) "1" else "0"
-        "${t.id}::${t.title}::${doneFlag}"
-    }
-}
-
-private fun loadReminders(context: Context): List<Reminder> {
-    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    val raw = prefs.getString(KEY_REMINDERS, null) ?: return emptyList()
-    return raw.lines()
-        .filter { it.isNotBlank() }
-        .mapNotNull { line ->
-            val parts = line.split("::")
-            if (parts.size != 4) return@mapNotNull null
-            val id = parts[0].toIntOrNull() ?: return@mapNotNull null
-            val hour = parts[1].toIntOrNull() ?: return@mapNotNull null
-            val minute = parts[2].toIntOrNull() ?: return@mapNotNull null
-            val repeat = parts[3]
-            val interval = RepeatInterval.values().find { it.name == repeat } ?: RepeatInterval.DAILY
-            Reminder(id, hour, minute, interval)
-        }
-}
-
-private fun saveReminders(context: Context, reminders: List<Reminder>) {
-    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    val raw = reminders.joinToString("\n") { r ->
-        "${r.id}::${r.hour}::${r.minute}::${r.repeat.name}"
-    }
-    prefs.edit().putString(KEY_REMINDERS, raw).apply()
-}
-
-// ---------- Alarm scheduling ----------
-
-private fun scheduleAllReminders(context: Context, reminders: List<Reminder>) {
-    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-
-    // Cancel a range of possible old alarms
-    for (id in 1..500) {
-        val cancelIntent = Intent(context, ReminderReceiver::class.java)
         val pending = PendingIntent.getBroadcast(
-            context,
-            id,
-            cancelIntent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_NO_CREATE
-        )
-        if (pending != null) {
-            alarmManager.cancel(pending)
-        }
-    }
-
-    // Schedule current reminders
-    reminders.forEach { reminder ->
-        val intent = Intent(context, ReminderReceiver::class.java).apply {
-            putExtra("title", "Check your daily tasks")
-        }
-
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
-            reminder.id,
+            this,
+            code,
             intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         val calendar = Calendar.getInstance().apply {
             timeInMillis = System.currentTimeMillis()
-            set(Calendar.HOUR_OF_DAY, reminder.hour)
-            set(Calendar.MINUTE, reminder.minute)
+            set(Calendar.HOUR_OF_DAY, h)
+            set(Calendar.MINUTE, m)
             set(Calendar.SECOND, 0)
             set(Calendar.MILLISECOND, 0)
+
+            // If that time today has passed, schedule from tomorrow
             if (before(Calendar.getInstance())) {
                 add(Calendar.DAY_OF_MONTH, 1)
             }
         }
 
-        val intervalMillis = when (reminder.repeat) {
-            RepeatInterval.DAILY -> AlarmManager.INTERVAL_DAY
-            RepeatInterval.WEEKLY -> AlarmManager.INTERVAL_DAY * 7
-            RepeatInterval.MONTHLY -> AlarmManager.INTERVAL_DAY * 30
-            RepeatInterval.YEARLY -> AlarmManager.INTERVAL_DAY * 365
-        }
-
-        alarmManager.setRepeating(
+        alarmManager.setInexactRepeating(
             AlarmManager.RTC_WAKEUP,
             calendar.timeInMillis,
-            intervalMillis,
-            pendingIntent
+            AlarmManager.INTERVAL_DAY,
+            pending
         )
+    }
+}
+
+// ---------------- UI MODELS ----------------
+
+data class RoutineSection(
+    val title: String,
+    val items: List<String>
+)
+
+// ---------------- COMPOSABLE UI ----------------
+
+@Composable
+fun MyDailyRoutineApp() {
+    MaterialTheme {
+        Scaffold(
+            topBar = {
+                CenterAlignedTopAppBar(
+                    title = { Text("My Daily Routine") }
+                )
+            }
+        ) { paddingValues ->
+            RoutineScreen(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+            )
+        }
+    }
+}
+
+@Composable
+fun RoutineScreen(modifier: Modifier = Modifier) {
+    // Define the full routine – this is what makes the app feel “complete”
+    val sections = remember {
+        listOf(
+            RoutineSection(
+                title = "Sleep & Wake",
+                items = listOf(
+                    "Wake-up time logged",
+                    "Bedtime logged",
+                    "Sleep machine / app used",
+                    "Hours slept noted"
+                )
+            ),
+            RoutineSection(
+                title = "Water Intake (3 Liters)",
+                items = listOf(
+                    "0.5 L",
+                    "1.0 L",
+                    "1.5 L",
+                    "2.0 L",
+                    "2.5 L",
+                    "3.0 L"
+                )
+            ),
+            RoutineSection(
+                title = "Medicines",
+                items = listOf(
+                    "Morning tablet taken",
+                    "Night tablet taken"
+                )
+            ),
+            RoutineSection(
+                title = "Exercise",
+                items = listOf(
+                    "Morning walk / gym",
+                    "Evening walk / gym",
+                    "Rest day noted"
+                )
+            ),
+            RoutineSection(
+                title = "Meals",
+                items = listOf(
+                    "Lunch eaten (12:00 pm)",
+                    "Dinner eaten (7:00 pm)"
+                )
+            ),
+            RoutineSection(
+                title = "Work & Home",
+                items = listOf(
+                    "Office work completed",
+                    "Cooking done",
+                    "House cleaning done"
+                )
+            )
+        )
+    }
+
+    val allItems = remember(sections) { sections.flatMap { it.items } }
+
+    // Track checkbox state for each item by label
+    val checkStates = remember {
+        mutableStateMapOf<String, Boolean>().apply {
+            allItems.forEach { put(it, false) }
+        }
+    }
+
+    val completedCount = checkStates.values.count { it }
+    val totalCount = allItems.size
+    val progress = if (totalCount == 0) 0f else completedCount.toFloat() / totalCount
+
+    val dateFormatter = remember {
+        SimpleDateFormat("EEEE, MMM d", Locale.getDefault())
+    }
+    val todayText = remember { dateFormatter.format(Date()) }
+
+    Column(
+        modifier = modifier
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+
+        // Header: today + progress
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp)
+            ) {
+                Text(
+                    text = todayText,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = "$completedCount of $totalCount tasks completed",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                LinearProgressIndicator(
+                    progress = progress,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Scrollable list of sections
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(sections) { section ->
+                RoutineSectionCard(
+                    section = section,
+                    checkStates = checkStates
+                )
+            }
+
+            item {
+                ReminderSummaryCard()
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Clear button that actually does something
+        Button(
+            onClick = {
+                checkStates.keys.forEach { key ->
+                    checkStates[key] = false
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+        ) {
+            Text("Clear progress for today")
+        }
+    }
+}
+
+@Composable
+fun RoutineSectionCard(
+    section: RoutineSection,
+    checkStates: MutableMap<String, Boolean>
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            Text(
+                text = section.title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            section.items.forEach { label ->
+                val checked = checkStates[label] ?: false
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                ) {
+                    Checkbox(
+                        checked = checked,
+                        onCheckedChange = { isChecked ->
+                            checkStates[label] = isChecked
+                        }
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ReminderSummaryCard() {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            Text(
+                text = "Reminders",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text("• Morning reminder at 7:00 am")
+            Text("• Afternoon reminder at 12:00 pm")
+            Text("• Evening reminder at 7:00 pm")
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = "You will get a notification at these times every day.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
     }
 }
