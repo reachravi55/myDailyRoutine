@@ -1,1 +1,1 @@
-Gradle wrapper jar will be downloaded automatically on first run.
+This would normally contain gradle-wrapper.jar; GitHub will download it automatically during build.

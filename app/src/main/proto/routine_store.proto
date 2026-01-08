@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+option java_package = "com.reachravi55.mydailyroutine.proto";
+option java_multiple_files = true;
+
+message RoutineStore {
+  repeated RoutineList lists = 1;
+  repeated Task tasks = 2;
+  repeated OccurrenceOverride overrides = 3;
+  UserSettings settings = 4;
+}
+
+message RoutineList {
+  string id = 1;
+  string name = 2;
+  string icon = 3;   // e.g. "work", "home", "fitness"
+  int32 color = 4;   // ARGB packed int
+  int32 sort_order = 5;
+}
+
+message Task {
+  string id = 1;
+  string list_id = 2;
+  string title = 3;
+  string description = 4;
+
+  // Scheduling
+  string start_date = 10; // yyyy-mm-dd
+  bool has_time = 11;
+  int32 hour = 12;
+  int32 minute = 13;
+
+  RepeatRule repeat = 20;
+
+  repeated Reminder reminders = 30;
+  repeated Subtask subtasks = 40;
+
+  bool pinned = 50;
+  bool archived = 51;
+
+  int64 created_at_epoch_ms = 60;
+  int64 updated_at_epoch_ms = 61;
+}
+
+message Subtask {
+  string id = 1;
+  string title = 2;
+  bool notes_enabled = 3; // if true, user can add notes per occurrence
+  int32 sort_order = 4;
+}
+
+message Reminder {
+  int32 hour = 1;
+  int32 minute = 2;
+  bool enabled = 3;
+}
+
+message RepeatRule {
+  enum Frequency {
+    NONE = 0;
+    DAILY = 1;
+    WEEKLY = 2;
+    MONTHLY = 3;
+    YEARLY = 4;
+  }
+  Frequency frequency = 1;
+  int32 interval = 2; // every N units; 1 = every day/week/month/year
+
+  // WEEKLY options
+  repeated int32 weekdays = 10; // 1=Mon ... 7=Sun (java.time)
+
+  // MONTHLY options
+  int32 day_of_month = 20; // 1-31, 0 means "use start_date day"
+
+  // End options
+  string until_date = 30; // yyyy-mm-dd, empty = no end
+}
+
+message OccurrenceOverride {
+  string task_id = 1;
+  string date = 2; // yyyy-mm-dd
+  bool completed = 3;
+  string note = 4;
+  repeated SubtaskState subtask_states = 5;
+  bool skipped = 6; // if true, hide this occurrence
+}
+
+message SubtaskState {
+  string subtask_id = 1;
+  bool completed = 2;
+  string note = 3;
+}
+
+message UserSettings {
+  string active_list_id = 1;
+  bool dark_mode = 2;
+  bool haptics = 3;
+}
