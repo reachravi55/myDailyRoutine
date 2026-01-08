@@ -69,7 +69,7 @@ data class RoutinePrefs(
     val seenOnboarding: Boolean = false
 )
 
-// Convert "label|||note" set into a map
+// Encode / decode notes as "label|||note" so we can store in a Set<String>
 private fun decodeNotes(set: Set<String>): Map<String, String> =
     set.mapNotNull { raw ->
         val idx = raw.indexOf("|||")
@@ -77,7 +77,6 @@ private fun decodeNotes(set: Set<String>): Map<String, String> =
         else raw.substring(0, idx) to raw.substring(idx + 3)
     }.toMap()
 
-// Convert map back to "label|||note" set
 private fun encodeNotes(map: Map<String, String>): Set<String> =
     map.filter { it.value.isNotBlank() }
         .map { (k, v) -> "$k|||$v" }
@@ -182,6 +181,14 @@ fun scheduleAllReminders(context: Context, settings: ReminderSettings) {
     scheduleOne(settings.eveningHour, settings.eveningMinute, EVENING_REQ, "Evening routine")
 }
 
+// helper to trigger ReminderReceiver immediately (for testing)
+fun sendTestNotification(context: Context) {
+    val intent = Intent(context, ReminderReceiver::class.java).apply {
+        putExtra("title", "Test reminder")
+    }
+    context.sendBroadcast(intent)
+}
+
 // ---------- Routine ----------
 data class RoutineSection(val title: String, val items: List<String>)
 
@@ -212,7 +219,7 @@ fun buildRoutineSections() = listOf(
     )
 )
 
-// which sections should have notes text fields
+// Sections that allow notes
 private val SECTIONS_WITH_NOTES = setOf("Sleep & Wake", "Exercise", "Work & Home")
 
 // ---------- Screens ----------
@@ -274,16 +281,12 @@ fun MyDailyRoutineApp() {
                 onClear = { scope.launch { clearCompletedItems(context) } },
                 onSettings = { screen = AppScreen.Settings },
                 onShare = {
-                    val text = buildShareText(sections, prefs.completedItems)
-                    context.startActivity(
-                        Intent.createChooser(
-                            Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, text)
-                            },
-                            "Share routine"
-                        )
-                    )
+                    val text = buildShareText(sections, prefs.completedItems, prefs.itemNotes)
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, text)
+                    }
+                    context.startActivity(Intent.createChooser(intent, "Share routine"))
                 }
             )
 
@@ -293,7 +296,8 @@ fun MyDailyRoutineApp() {
                     scope.launch { setReminderSettings(context, it) }
                     screen = AppScreen.Home
                 },
-                onBack = { screen = AppScreen.Home }
+                onBack = { screen = AppScreen.Home },
+                onTestNotification = { sendTestNotification(context) }
             )
         }
     }
@@ -408,7 +412,7 @@ fun HomeScreen(
                     SectionCard(
                         section = section,
                         completed = completed,
-                        notes = notes,
+                        notesFromPrefs = notes,
                         onToggleItem = onToggleItem,
                         onChangeNote = onChangeNote
                     )
@@ -432,7 +436,7 @@ fun HomeScreen(
 fun SectionCard(
     section: RoutineSection,
     completed: Set<String>,
-    notes: Map<String, String>,
+    notesFromPrefs: Map<String, String>,
     onToggleItem: (String, Boolean) -> Unit,
     onChangeNote: (String, String) -> Unit
 ) {
@@ -452,7 +456,17 @@ fun SectionCard(
 
             section.items.forEach { label ->
                 val checked = completed.contains(label)
-                val currentNote = notes[label] ?: ""
+                val persistedNote = notesFromPrefs[label] ?: ""
+
+                // Local state for the note text to avoid cursor jumping
+                var localNote by remember(label) { mutableStateOf(persistedNote) }
+
+                // Keep local in sync if prefs change
+                LaunchedEffect(persistedNote) {
+                    if (persistedNote != localNote) {
+                        localNote = persistedNote
+                    }
+                }
 
                 Column(
                     Modifier
@@ -479,8 +493,11 @@ fun SectionCard(
                     if (allowNotes && checked) {
                         Spacer(Modifier.height(4.dp))
                         OutlinedTextField(
-                            value = currentNote,
-                            onValueChange = { text -> onChangeNote(label, text) },
+                            value = localNote,
+                            onValueChange = { newText ->
+                                localNote = newText
+                                onChangeNote(label, newText)
+                            },
                             modifier = Modifier.fillMaxWidth(),
                             label = { Text("Notes") },
                             singleLine = false,
@@ -518,7 +535,8 @@ fun ReminderSummaryCard(s: ReminderSettings) {
 fun SettingsScreen(
     settings: ReminderSettings,
     onSave: (ReminderSettings) -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onTestNotification: () -> Unit
 ) {
     var mh by remember { mutableStateOf(settings.morningHour.toString()) }
     var mm by remember { mutableStateOf(settings.morningMinute.toString()) }
@@ -552,21 +570,32 @@ fun SettingsScreen(
                 ReminderTimeRow("Evening", eh, em, { eh = it }, { em = it })
             }
 
-            Button(
-                onClick = {
-                    val newSettings = ReminderSettings(
-                        morningHour = mh.toIntOrNull()?.coerceIn(0, 23) ?: settings.morningHour,
-                        morningMinute = mm.toIntOrNull()?.coerceIn(0, 59) ?: settings.morningMinute,
-                        afternoonHour = ah.toIntOrNull()?.coerceIn(0, 23) ?: settings.afternoonHour,
-                        afternoonMinute = am.toIntOrNull()?.coerceIn(0, 59) ?: settings.afternoonMinute,
-                        eveningHour = eh.toIntOrNull()?.coerceIn(0, 23) ?: settings.eveningHour,
-                        eveningMinute = em.toIntOrNull()?.coerceIn(0, 59) ?: settings.eveningMinute
-                    )
-                    onSave(newSettings)
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Save reminder times")
+            Column {
+                Button(
+                    onClick = {
+                        val newSettings = ReminderSettings(
+                            morningHour = mh.toIntOrNull()?.coerceIn(0, 23) ?: settings.morningHour,
+                            morningMinute = mm.toIntOrNull()?.coerceIn(0, 59) ?: settings.morningMinute,
+                            afternoonHour = ah.toIntOrNull()?.coerceIn(0, 23) ?: settings.afternoonHour,
+                            afternoonMinute = am.toIntOrNull()?.coerceIn(0, 59) ?: settings.afternoonMinute,
+                            eveningHour = eh.toIntOrNull()?.coerceIn(0, 23) ?: settings.eveningHour,
+                            eveningMinute = em.toIntOrNull()?.coerceIn(0, 59) ?: settings.eveningMinute
+                        )
+                        onSave(newSettings)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Save reminder times")
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                OutlinedButton(
+                    onClick = onTestNotification,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Send test notification now")
+                }
             }
         }
     }
@@ -601,7 +630,11 @@ fun ReminderTimeRow(
 }
 
 // ---------- Share ----------
-fun buildShareText(sections: List<RoutineSection>, completed: Set<String>): String {
+fun buildShareText(
+    sections: List<RoutineSection>,
+    completed: Set<String>,
+    notes: Map<String, String>
+): String {
     val date = SimpleDateFormat("EEEE, MMM d", Locale.getDefault()).format(Date())
     return buildString {
         append("My daily routine for $date:\n\n")
@@ -609,7 +642,12 @@ fun buildShareText(sections: List<RoutineSection>, completed: Set<String>): Stri
             append(section.title).append(":\n")
             section.items.forEach { item ->
                 val mark = if (completed.contains(item)) "✓" else "✗"
-                append("  [").append(mark).append("] ").append(item).append('\n')
+                append("  [").append(mark).append("] ").append(item)
+                val note = notes[item]
+                if (!note.isNullOrBlank() && SECTIONS_WITH_NOTES.contains(section.title)) {
+                    append("  — Notes: ").append(note.trim())
+                }
+                append('\n')
             }
             append('\n')
         }
