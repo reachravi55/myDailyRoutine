@@ -109,8 +109,12 @@ suspend fun setCompletedItems(context: Context, items: Set<String>) {
     context.dataStore.edit { it[PrefKeys.completedItems] = items }
 }
 
+// ✅ CLEAR BOTH CHECKBOXES & NOTES
 suspend fun clearCompletedItems(context: Context) {
-    context.dataStore.edit { it[PrefKeys.completedItems] = emptySet() }
+    context.dataStore.edit { prefs ->
+        prefs[PrefKeys.completedItems] = emptySet()
+        prefs[PrefKeys.itemNotes] = emptySet()   // <-- clear all notes too
+    }
 }
 
 suspend fun setSeenOnboarding(context: Context, seen: Boolean) {
@@ -279,8 +283,14 @@ fun buildRoutineSections() = listOf(
     )
 )
 
-// Sections that allow notes
-private val SECTIONS_WITH_NOTES = setOf("Sleep & Wake", "Exercise", "Work & Home")
+// ✅ Allow notes in these sections (now includes Medicines & Meals)
+private val SECTIONS_WITH_NOTES = setOf(
+    "Sleep & Wake",
+    "Exercise",
+    "Work & Home",
+    "Medicines",
+    "Meals"
+)
 
 // ---------- Screens ----------
 enum class AppScreen { Onboarding, Home, Settings }
