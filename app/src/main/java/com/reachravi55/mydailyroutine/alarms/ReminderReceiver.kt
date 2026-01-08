@@ -12,6 +12,7 @@ import androidx.core.app.NotificationManagerCompat
 import com.reachravi55.mydailyroutine.MainActivity
 
 class ReminderReceiver : BroadcastReceiver() {
+
     override fun onReceive(context: Context, intent: Intent) {
         val channelId = "routine_channel"
 
@@ -21,17 +22,18 @@ class ReminderReceiver : BroadcastReceiver() {
                 "Routine Reminders",
                 NotificationManager.IMPORTANCE_HIGH
             )
-            val nm = context.getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(channel)
+            context.getSystemService(NotificationManager::class.java)
+                .createNotificationChannel(channel)
         }
 
         val open = PendingIntent.getActivity(
-            context, 0,
+            context,
+            0,
             Intent(context, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val title = intent.getStringExtra("title")?.takeIf { it.isNotBlank() } ?: "Routine Reminder"
+        val title = intent.getStringExtra("title") ?: "Routine Reminder"
 
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.ic_popup_reminder)
@@ -42,7 +44,7 @@ class ReminderReceiver : BroadcastReceiver() {
             .build()
 
         NotificationManagerCompat.from(context).notify(
-            System.currentTimeMillis().toInt(),
+            (System.currentTimeMillis() % Int.MAX_VALUE).toInt(),
             notification
         )
     }

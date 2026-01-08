@@ -1,268 +1,260 @@
 package com.reachravi55.mydailyroutine.ui
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import com.reachravi55.mydailyroutine.alarms.AlarmScheduler
+import com.reachravi55.mydailyroutine.data.DateUtils
+import com.reachravi55.mydailyroutine.data.Ids
 import com.reachravi55.mydailyroutine.data.RoutineRepository
-import com.reachravi55.mydailyroutine.data.newId
 import com.reachravi55.mydailyroutine.proto.*
-import java.time.LocalDate
 import kotlinx.coroutines.launch
+import java.time.LocalDate
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TaskEditorScreen(store: RoutineStore, taskId: String?, onDone: () -> Unit) {
+fun TaskEditorScreen(
+    store: RoutineStore,
+    initialTaskId: String?,
+    initialListId: String,
+    initialDateKey: String?,
+    onDone: () -> Unit
+) {
     val ctx = LocalContext.current
     val repo = RoutineRepository.get(ctx)
     val scope = rememberCoroutineScope()
 
-    val existing = store.tasksList.firstOrNull { it.id == taskId }
-
-    var title by remember { mutableStateOf(existing?.title ?: "") }
-    var desc by remember { mutableStateOf(existing?.description ?: "") }
-
-    val lists = store.listsList.sortedBy { it.sortOrder }
-    var listId by remember { mutableStateOf(existing?.listId ?: (store.settings.activeListId.takeIf { it.isNotBlank() } ?: lists.firstOrNull()?.id ?: "")) }
-
-    // Scheduling
-    var startDate by remember { mutableStateOf(existing?.startDate?.takeIf { it.isNotBlank() } ?: LocalDate.now().toString()) }
-
-    var freq by remember { mutableStateOf(existing?.repeat?.frequency ?: RepeatRule.Frequency.DAILY) }
-    var interval by remember { mutableStateOf((existing?.repeat?.interval ?: 1).coerceAtLeast(1).toString()) }
-
-    // Weekly weekdays
-    val weekDaysAll = listOf(1 to "Mon", 2 to "Tue", 3 to "Wed", 4 to "Thu", 5 to "Fri", 6 to "Sat", 7 to "Sun")
-    val selectedWeekdays = remember { mutableStateListOf<Int>() }
-    LaunchedEffect(existing?.repeat?.weekdaysList) {
-        selectedWeekdays.clear()
-        existing?.repeat?.weekdaysList?.forEach { selectedWeekdays.add(it) }
-        if (selectedWeekdays.isEmpty() && freq == RepeatRule.Frequency.WEEKLY) selectedWeekdays.add(LocalDate.parse(startDate).dayOfWeek.value)
+    val existing = remember(store, initialTaskId) {
+        initialTaskId?.let { id -> store.tasksList.firstOrNull { it.id == id } }
     }
 
-    // Reminders (time list)
-    val reminders = remember { mutableStateListOf<Reminder>() }
-    LaunchedEffect(existing?.remindersList) {
-        reminders.clear()
-        existing?.remindersList?.forEach { reminders.add(it) }
-        if (reminders.isEmpty()) {
-            reminders.add(Reminder.newBuilder().setHour(8).setMinute(0).setEnabled(true).build())
+    val lists = store.listsList.filterNot { it.archived }.sortedBy { it.sortOrder }
+
+    var title by rememberSaveable { mutableStateOf(existing?.title ?: "") }
+    var description by rememberSaveable { mutableStateOf(existing?.description ?: "") }
+    var listId by rememberSaveable { mutableStateOf(existing?.listId ?: initialListId) }
+    if (listId.isBlank() && lists.isNotEmpty()) listId = lists.first().id
+
+    var startDate by rememberSaveable { mutableStateOf(existing?.startDate ?: (initialDateKey ?: DateUtils.todayKey())) }
+
+    var notesEnabled by rememberSaveable { mutableStateOf(existing?.notesEnabled ?: true) }
+
+    var freq by rememberSaveable { mutableStateOf(existing?.repeatRule?.frequency ?: RepeatRule.Frequency.DAILY) }
+    var interval by rememberSaveable { mutableStateOf((existing?.repeatRule?.interval ?: 1).coerceAtLeast(1)) }
+
+    val reminders = remember { mutableStateListOf<Reminder>() }.apply {
+        if (isEmpty()) {
+            val base = existing?.remindersList?.toList()
+            if (!base.isNullOrEmpty()) addAll(base)
         }
     }
-    var newHour by remember { mutableStateOf("8") }
-    var newMin by remember { mutableStateOf("0") }
 
-    // Subtasks
-    val subtasks = remember { mutableStateListOf<Subtask>() }
-    LaunchedEffect(existing?.subtasksList) {
-        subtasks.clear()
-        existing?.subtasksList?.forEach { subtasks.add(it) }
+    // if creating brand-new and empty reminders, seed one
+    LaunchedEffect(Unit) {
+        if (existing == null && reminders.isEmpty()) {
+            reminders.add(Reminder.newBuilder().setHour(9).setMinute(0).setEnabled(true).setLabel("Morning").build())
+        }
     }
-    var newSub by remember { mutableStateOf("") }
+
+    val canSave = title.trim().isNotEmpty() && listId.isNotBlank() && startDate.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))
+
+    // Centralized save handler so both the top app-bar action and the bottom button work.
+    fun doSave() {
+        if (!canSave) return
+        scope.launch {
+            val taskId = existing?.id ?: Ids.id()
+            val rr = RepeatRule.newBuilder()
+                .setFrequency(freq)
+                .setInterval(interval)
+                .build()
+
+            val t = Task.newBuilder()
+                .setId(taskId)
+                .setListId(listId)
+                .setTitle(title.trim())
+                .setDescription(description.trim())
+                .setStartDate(startDate)
+                .setRepeatRule(rr)
+                .setNotesEnabled(notesEnabled)
+                .setSortOrder(existing?.sortOrder ?: (store.tasksCount + 1))
+                .setArchived(false)
+                .clearReminders()
+                .apply { reminders.forEach { addReminders(it) } }
+                .build()
+
+            repo.upsertTask(t)
+            onDone()
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (existing == null) "New Task" else "Edit Task") },
-                navigationIcon = { }
+                title = { Text(if (existing == null) "New task" else "Edit task") },
+                navigationIcon = {
+                    IconButton(onClick = onDone) { Icon(Icons.Default.ArrowBack, contentDescription = "Back") }
+                },
+                actions = {
+                    if (existing != null) {
+                        IconButton(onClick = {
+                            scope.launch {
+                                repo.deleteTask(existing.id)
+                                onDone()
+                            }
+                        }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
+                    }
+                    IconButton(
+                        onClick = { doSave() },
+                        enabled = canSave
+                    ) { Icon(Icons.Default.Save, contentDescription = "Save") }
+                }
+            )
+        },
+        bottomBar = {
+            // A visible, always-present Save button so users never feel "stuck".
+            Surface(tonalElevation = 3.dp) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDone,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Cancel") }
+                    Button(
+                        onClick = { doSave() },
+                        enabled = canSave,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Save") }
+                }
+            }
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = {
+                    reminders.add(
+                        Reminder.newBuilder().setHour(12).setMinute(0).setEnabled(true).setLabel("Reminder").build()
+                    )
+                },
+                icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                text = { Text("Add reminder") }
             )
         }
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(16.dp)
+    ) { inner ->
+        Column(
+            Modifier
+                .padding(inner)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
         ) {
-            item {
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("Title") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+
+            OutlinedTextField(
+                value = title,
+                onValueChange = { title = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Title") },
+                singleLine = true
+            )
+            Spacer(Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = description,
+                onValueChange = { description = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Description (optional)") },
+                maxLines = 3
+            )
+            Spacer(Modifier.height(12.dp))
+
+            // List picker
+            ListPicker(
+                lists = lists,
+                currentListId = listId,
+                onSelected = { listId = it }
+            )
+            Spacer(Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = startDate,
+                onValueChange = { startDate = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Start date (YYYY-MM-DD)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                singleLine = true
+            )
+            Spacer(Modifier.height(12.dp))
+
+            RepeatPicker(
+                freq = freq,
+                interval = interval,
+                onFreq = { freq = it },
+                onInterval = { interval = it.coerceAtLeast(1) }
+            )
+
+            Spacer(Modifier.height(12.dp))
+
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text("Notes on completion", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(2.dp))
+                    Text("Show notes box after checking", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Switch(checked = notesEnabled, onCheckedChange = { notesEnabled = it })
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Text("Reminders", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+
+            reminders.forEachIndexed { idx, r ->
+                ReminderRow(
+                    reminder = r,
+                    onChange = { reminders[idx] = it },
+                    onRemove = { reminders.removeAt(idx) }
                 )
                 Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = desc,
-                    onValueChange = { desc = it },
-                    label = { Text("Description (optional)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 2
-                )
-                Spacer(Modifier.height(16.dp))
             }
 
-            item {
-                Text("List", style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.height(6.dp))
-                if (lists.isEmpty()) {
-                    Text("Create a list first (Lists tab).", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else {
-                    ExposedDropdownMenuBox(expanded = false, onExpandedChange = {}) { /* placeholder */ }
-                    // simple buttons instead of dropdown (keeps code compact)
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(lists) { l ->
-                            FilterChip(selected = listId == l.id, onClick = { listId = l.id }, label = { Text(l.name) })
-                        }
-                    }
-                }
-                Spacer(Modifier.height(16.dp))
-            }
+            Spacer(Modifier.height(120.dp))
+        }
+    }
+}
 
-            item {
-                Text("Schedule", style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(
-                    value = startDate,
-                    onValueChange = { startDate = it },
-                    label = { Text("Start date (YYYY-MM-DD)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(10.dp))
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ListPicker(lists: List<RoutineList>, currentListId: String, onSelected: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val current = lists.firstOrNull { it.id == currentListId } ?: lists.firstOrNull()
 
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FrequencyDropdown(freq = freq, onChange = { freq = it }, modifier = Modifier.weight(1f))
-                    OutlinedTextField(
-                        value = interval,
-                        onValueChange = { interval = it.filter { ch -> ch.isDigit() }.take(3) },
-                        label = { Text("Every") },
-                        singleLine = true,
-                        modifier = Modifier.width(110.dp)
-                    )
-                }
-
-                if (freq == RepeatRule.Frequency.WEEKLY) {
-                    Spacer(Modifier.height(10.dp))
-                    Text("Repeat on", style = MaterialTheme.typography.bodyMedium)
-                    Spacer(Modifier.height(6.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(weekDaysAll) { (v, label) ->
-                            FilterChip(selected = selectedWeekdays.contains(v), onClick = {
-                                if (selectedWeekdays.contains(v)) selectedWeekdays.remove(v) else selectedWeekdays.add(v)
-                            }, label = { Text(label) })
-                        }
-                    }
-                }
-                Spacer(Modifier.height(16.dp))
-            }
-
-            item {
-                Text("Reminders", style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.height(6.dp))
-                reminders.forEachIndexed { idx, r ->
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(String.format("%02d:%02d", r.hour, r.minute))
-                        Row {
-                            Switch(checked = r.enabled, onCheckedChange = {
-                                reminders[idx] = r.toBuilder().setEnabled(it).build()
-                            })
-                            TextButton(onClick = { reminders.removeAt(idx) }) { Text("Remove") }
-                        }
-                    }
-                    Divider()
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = newHour, onValueChange = { newHour = it.filter { c -> c.isDigit() }.take(2) }, label = { Text("Hour") }, singleLine = true, modifier = Modifier.weight(1f))
-                    OutlinedTextField(value = newMin, onValueChange = { newMin = it.filter { c -> c.isDigit() }.take(2) }, label = { Text("Min") }, singleLine = true, modifier = Modifier.weight(1f))
-                    Button(onClick = {
-                        val h = newHour.toIntOrNull()?.coerceIn(0,23) ?: 8
-                        val m = newMin.toIntOrNull()?.coerceIn(0,59) ?: 0
-                        reminders.add(Reminder.newBuilder().setHour(h).setMinute(m).setEnabled(true).build())
-                    }) { Text("Add") }
-                }
-                Spacer(Modifier.height(16.dp))
-            }
-
-            item {
-                Text("Checklist items", style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.height(6.dp))
-                subtasks.sortedBy { it.sortOrder }.forEachIndexed { idx, s ->
-                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text(s.title, style = MaterialTheme.typography.bodyLarge)
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                                    Text("Notes")
-                                    Spacer(Modifier.width(8.dp))
-                                    Switch(checked = s.notesEnabled, onCheckedChange = {
-                                        subtasks[idx] = s.toBuilder().setNotesEnabled(it).build()
-                                    })
-                                }
-                                TextButton(onClick = { subtasks.removeAt(idx) }) { Text("Delete") }
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = newSub,
-                        onValueChange = { newSub = it },
-                        label = { Text("New item") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true
-                    )
-                    Button(onClick = {
-                        val text = newSub.trim()
-                        if (text.isNotBlank()) {
-                            subtasks.add(
-                                Subtask.newBuilder()
-                                    .setId(newId())
-                                    .setTitle(text)
-                                    .setNotesEnabled(true)
-                                    .setSortOrder(subtasks.size)
-                                    .build()
-                            )
-                            newSub = ""
-                        }
-                    }) { Text("Add") }
-                }
-                Spacer(Modifier.height(24.dp))
-            }
-
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    TextButton(onClick = onDone) { Text("Cancel") }
-                    Button(onClick = {
-                        val task = (existing?.toBuilder() ?: Task.newBuilder().setId(newId())).apply {
-                            setTitle(title.trim().ifBlank { "Untitled task" })
-                            setDescription(desc.trim())
-                            setListId(listId)
-                            setStartDate(startDate.trim())
-                            setRepeat(
-                                RepeatRule.newBuilder()
-                                    .setFrequency(freq)
-                                    .setInterval(interval.toIntOrNull()?.coerceAtLeast(1) ?: 1)
-                                    .apply {
-                                        if (freq == RepeatRule.Frequency.WEEKLY) {
-                                            clearWeekdays()
-                                            selectedWeekdays.distinct().sorted().forEach { addWeekdays(it) }
-                                        }
-                                    }
-                                    .build()
-                            )
-                            clearReminders()
-                            reminders.forEach { addReminders(it) }
-                            clearSubtasks()
-                            subtasks.sortedBy { it.sortOrder }.forEach { addSubtasks(it) }
-                        }.build()
-
-                        // Save + schedule
-                        scope.launch {
-                            repo.upsertTask(task)
-                            AlarmScheduler.cancelTaskWindow(ctx, task, 30)
-                            AlarmScheduler.rescheduleTask(ctx, task, 30)
-                        }
-                        onDone()
-                    }) { Text("Save") }
-                }
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
+        OutlinedTextField(
+            value = current?.name ?: "Select list",
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier.fillMaxWidth().menuAnchor(),
+            label = { Text("List") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) }
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            lists.forEach { l ->
+                DropdownMenuItem(text = { Text(l.name) }, onClick = {
+                    onSelected(l.id)
+                    expanded = false
+                })
             }
         }
     }
@@ -270,39 +262,119 @@ fun TaskEditorScreen(store: RoutineStore, taskId: String?, onDone: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun FrequencyDropdown(freq: RepeatRule.Frequency, onChange: (RepeatRule.Frequency) -> Unit, modifier: Modifier = Modifier) {
+private fun RepeatPicker(
+    freq: RepeatRule.Frequency,
+    interval: Int,
+    onFreq: (RepeatRule.Frequency) -> Unit,
+    onInterval: (Int) -> Unit
+) {
     var expanded by remember { mutableStateOf(false) }
-    val options = listOf(
-        RepeatRule.Frequency.NONE to "One-time",
-        RepeatRule.Frequency.DAILY to "Daily",
-        RepeatRule.Frequency.WEEKLY to "Weekly",
-        RepeatRule.Frequency.MONTHLY to "Monthly",
-        RepeatRule.Frequency.YEARLY to "Yearly"
-    )
+    val label = when (freq) {
+        RepeatRule.Frequency.NONE -> "One-time"
+        RepeatRule.Frequency.DAILY -> "Daily"
+        RepeatRule.Frequency.WEEKLY -> "Weekly"
+        RepeatRule.Frequency.MONTHLY -> "Monthly"
+        RepeatRule.Frequency.YEARLY -> "Yearly"
+        else -> "Daily"
+    }
 
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = !expanded },
-        modifier = modifier
-    ) {
-        OutlinedTextField(
-            value = options.first { it.first == freq }.second,
-            onValueChange = {},
-            readOnly = true,
-            label = { Text("Repeat") },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier.menuAnchor().fillMaxWidth()
-        )
-        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            options.forEach { (value, label) ->
-                DropdownMenuItem(
-                    text = { Text(label) },
-                    onClick = {
-                        onChange(value)
-                        expanded = false
-                    }
-                )
+    Text("Repeat", style = MaterialTheme.typography.titleMedium)
+    Spacer(Modifier.height(8.dp))
+
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }, modifier = Modifier.weight(1f)) {
+            OutlinedTextField(
+                value = label,
+                onValueChange = {},
+                readOnly = true,
+                modifier = Modifier.fillMaxWidth().menuAnchor(),
+                label = { Text("Frequency") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) }
+            )
+            ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                listOf(
+                    RepeatRule.Frequency.NONE,
+                    RepeatRule.Frequency.DAILY,
+                    RepeatRule.Frequency.WEEKLY,
+                    RepeatRule.Frequency.MONTHLY,
+                    RepeatRule.Frequency.YEARLY
+                ).forEach { f ->
+                    DropdownMenuItem(
+                        text = { Text(f.name.lowercase().replaceFirstChar { it.titlecase() }) },
+                        onClick = {
+                            onFreq(f)
+                            expanded = false
+                        }
+                    )
+                }
             }
+        }
+
+        OutlinedTextField(
+            value = interval.toString(),
+            onValueChange = { v -> onInterval(v.toIntOrNull() ?: 1) },
+            label = { Text("Every") },
+            modifier = Modifier.width(110.dp),
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+    }
+    Spacer(Modifier.height(6.dp))
+    Text("Example: Every 2 weeks", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
+private fun ReminderRow(
+    reminder: Reminder,
+    onChange: (Reminder) -> Unit,
+    onRemove: () -> Unit
+) {
+    Card(elevation = CardDefaults.cardElevation(1.dp)) {
+        Column(Modifier.padding(12.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(reminder.label.ifBlank { "Reminder" }, style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = onRemove) { Text("Remove") }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = reminder.hour.toString().padStart(2, '0'),
+                    onValueChange = { v ->
+                        val h = v.toIntOrNull()?.coerceIn(0, 23) ?: 0
+                        onChange(reminder.toBuilder().setHour(h).build())
+                    },
+                    label = { Text("HH") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedTextField(
+                    value = reminder.minute.toString().padStart(2, '0'),
+                    onValueChange = { v ->
+                        val m = v.toIntOrNull()?.coerceIn(0, 59) ?: 0
+                        onChange(reminder.toBuilder().setMinute(m).build())
+                    },
+                    label = { Text("MM") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                Column(Modifier.weight(1f)) {
+                    Text("Enabled", style = MaterialTheme.typography.labelLarge)
+                    Switch(
+                        checked = reminder.enabled,
+                        onCheckedChange = { onChange(reminder.toBuilder().setEnabled(it).build()) }
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = reminder.label,
+                onValueChange = { onChange(reminder.toBuilder().setLabel(it).build()) },
+                label = { Text("Label") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 }

@@ -4,78 +4,134 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Event
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
-import com.reachravi55.mydailyroutine.alarms.AlarmScheduler
+import com.reachravi55.mydailyroutine.data.DateUtils
 import com.reachravi55.mydailyroutine.data.RepeatEngine
-import com.reachravi55.mydailyroutine.data.RoutineRepository
-import com.reachravi55.mydailyroutine.data.key
+import com.reachravi55.mydailyroutine.proto.OccurrenceOverride
+import com.reachravi55.mydailyroutine.proto.RoutineList
 import com.reachravi55.mydailyroutine.proto.RoutineStore
 import com.reachravi55.mydailyroutine.proto.Task
 import java.time.LocalDate
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TodayScreen(store: RoutineStore, date: LocalDate, contentPadding: PaddingValues) {
-    val ctx = LocalContext.current
-    val repo = RoutineRepository.get(ctx)
-    val scope = rememberCoroutineScope()
+fun TodayScreen(
+    store: RoutineStore,
+    contentPadding: PaddingValues,
+    onOpenDay: (LocalDate) -> Unit,
+    onNewTask: (listId: String, dateKey: String) -> Unit
+) {
+    val today = LocalDate.now()
+    val dateKey = DateUtils.formatKey(today)
 
-    val tasks = store.tasksList.filter { !it.archived }
-    val overrides = store.overridesList.filter { it.date == date.key() }.associateBy { it.taskId }
+    val lists = store.listsList.filterNot { it.archived }.sortedBy { it.sortOrder }
+    var filterListId by rememberSaveable { mutableStateOf(store.activeListId) }
+    if (filterListId.isBlank() && lists.isNotEmpty()) filterListId = lists.first().id
 
-    val occ = tasks.flatMap { t ->
-        val dates = RepeatEngine.occurrences(t, date, date)
-        if (dates.isNotEmpty()) listOf(t) else emptyList()
-    }.sortedBy { it.title.lowercase() }
+    val visibleTasks = store.tasksList
+        .filter { !it.archived }
+        .filter { filterListId.isBlank() || it.listId == filterListId }
+        .filter { RepeatEngine.occursOn(it, today) }
+        .sortedBy { it.sortOrder }
 
-    val shareText = remember(store, date) {
-        buildShareText(store, date)
-    }
+    val overridesByTask = store.overridesList.filter { it.date == dateKey }.associateBy { it.taskId }
 
-    Column(Modifier.fillMaxSize().padding(contentPadding)) {
-        Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Today", style = MaterialTheme.typography.headlineSmall)
-            IconButton(onClick = {
-                Share.shareText(ctx, shareText)
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Today") },
+                actions = {
+                    IconButton(onClick = { onOpenDay(today) }) {
+                        Icon(Icons.Default.Event, contentDescription = "Open calendar")
+                    }
+                }
+            )
+        },
+        floatingActionButton = {
+            FloatingActionButton(onClick = {
+                val listId = if (filterListId.isNotBlank()) filterListId else store.activeListId
+                onNewTask(listId, dateKey)
             }) {
-                Icon(Icons.Default.Share, contentDescription = "Share")
+                Icon(Icons.Default.Add, contentDescription = "New task")
             }
         }
+    ) { inner ->
+        Column(
+            modifier = Modifier
+                .padding(contentPadding)
+                .padding(inner)
+                .fillMaxSize()
+        ) {
+            if (lists.isNotEmpty()) {
+                ListFilterRow(
+                    lists = lists,
+                    currentListId = filterListId,
+                    onListSelected = { filterListId = it }
+                )
+            } else {
+                SectionHeader("No lists yet")
+                Text(
+                    "Go to Lists to create your first list.",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
 
-        if (occ.isEmpty()) {
-            EmptyStateCard(
-                title = "No tasks scheduled",
-                subtitle = "Tap New to create your first checklist or reminder."
+            Spacer(Modifier.height(8.dp))
+
+            if (visibleTasks.isEmpty()) {
+                EmptyState(
+                    title = "Nothing scheduled for today",
+                    subtitle = "Tap + to create a task, or schedule a repeating routine."
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 96.dp)
+                ) {
+                    items(visibleTasks, key = { it.id }) { task ->
+                        val ov: OccurrenceOverride? = overridesByTask[task.id]
+                        Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                            TaskOccurrenceCard(task = task, dateKey = dateKey, override = ov)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ListFilterRow(
+    lists: List<RoutineList>,
+    currentListId: String,
+    onListSelected: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val current = lists.firstOrNull { it.id == currentListId } ?: lists.first()
+
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text("List", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
+            OutlinedTextField(
+                value = current.name,
+                onValueChange = {},
+                readOnly = true,
+                modifier = Modifier.menuAnchor(),
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) }
             )
-        } else {
-            LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-                items(occ, key = { it.id }) { task ->
-                    val o = overrides[task.id]
-                    TaskOccurrenceCard(
-                        task = task,
-                        date = date,
-                        completed = o?.completed == true,
-                        note = o?.note ?: "",
-                        subtaskStates = o?.subtaskStatesList ?: emptyList(),
-                        onToggleComplete = { checked ->
-                            scope.launch { repo.setOccurrence(task.id, date.key(), checked, null) }
-                        },
-                        onNoteChange = { note ->
-                            scope.launch { repo.setOccurrence(task.id, date.key(), o?.completed == true, note) }
-                        },
-                        onSubtaskToggle = { subId, checked ->
-                            scope.launch { repo.setSubtaskState(task.id, date.key(), subId, checked, null) }
-                        },
-                        onSubtaskNoteChange = { subId, note ->
-                            scope.launch { repo.setSubtaskState(task.id, date.key(), subId, true, note) }
-                        },
-                        onRescheduleReminders = {
-                            AlarmScheduler.rescheduleTask(ctx, task)
+            ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                lists.forEach { l ->
+                    DropdownMenuItem(
+                        text = { Text(l.name) },
+                        onClick = {
+                            onListSelected(l.id)
+                            expanded = false
                         }
                     )
                 }
@@ -84,44 +140,11 @@ fun TodayScreen(store: RoutineStore, date: LocalDate, contentPadding: PaddingVal
     }
 }
 
-private fun buildShareText(store: RoutineStore, date: LocalDate): String {
-    val dateKey = date.key()
-    val tasks = store.tasksList.filter { !it.archived }
-    val overrides = store.overridesList.filter { it.date == dateKey }.associateBy { it.taskId }
-
-    val occ = tasks.filter { RepeatEngine.occurrences(it, date, date).isNotEmpty() }
-        .sortedBy { it.title.lowercase() }
-
-    val sb = StringBuilder()
-    sb.append("My Daily Routine — ").append(dateKey).append("\n\n")
-    for (t in occ) {
-        val o = overrides[t.id]
-        val mark = if (o?.completed == true) "✅" else "⬜"
-        sb.append(mark).append(" ").append(t.title).append("\n")
-        val note = (o?.note ?: "").trim()
-        if (note.isNotBlank()) sb.append("   • Note: ").append(note).append("\n")
-        // subtasks
-        if (t.subtasksCount > 0) {
-            val subStates = (o?.subtaskStatesList ?: emptyList()).associateBy { it.subtaskId }
-            t.subtasksList.sortedBy { it.sortOrder }.forEach { s ->
-                val st = subStates[s.id]
-                val smark = if (st?.completed == true) "✅" else "⬜"
-                sb.append("   ").append(smark).append(" ").append(s.title).append("\n")
-                val sn = (st?.note ?: "").trim()
-                if (sn.isNotBlank()) sb.append("      • ").append(sn).append("\n")
-            }
-        }
-        sb.append("\n")
-    }
-    return sb.toString().trim()
-}
-
-object Share {
-    fun shareText(context: android.content.Context, text: String) {
-        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(android.content.Intent.EXTRA_TEXT, text)
-        }
-        context.startActivity(android.content.Intent.createChooser(send, "Share"))
+@Composable
+private fun EmptyState(title: String, subtitle: String) {
+    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
+        Text(title, style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(8.dp))
+        Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

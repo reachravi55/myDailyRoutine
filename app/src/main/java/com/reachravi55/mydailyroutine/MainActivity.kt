@@ -29,7 +29,6 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 val ctx = LocalContext.current
                 LaunchedEffect(Unit) {
-                    // Ensure store exists
                     RoutineRepository.get(ctx).ensureInitialized()
                 }
                 AppRoot()

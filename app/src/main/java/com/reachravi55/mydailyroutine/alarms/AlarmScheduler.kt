@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import com.reachravi55.mydailyroutine.data.RepeatEngine
-import com.reachravi55.mydailyroutine.data.parseDateKey
 import com.reachravi55.mydailyroutine.proto.Task
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -20,10 +19,6 @@ object AlarmScheduler {
     private const val EXTRA_HOUR = "hour"
     private const val EXTRA_MIN = "min"
 
-    /**
-     * Schedules alarms for next [daysAhead] days for this task.
-     * Cancels existing alarms for those days first (idempotent).
-     */
     fun rescheduleTask(context: Context, task: Task, daysAhead: Int = 30) {
         if (task.remindersCount == 0) return
         if (task.startDate.isBlank()) return
@@ -31,8 +26,7 @@ object AlarmScheduler {
         val now = LocalDate.now()
         val end = now.plusDays(daysAhead.toLong())
 
-        // Cancel and re-schedule for window
-        val occDates = RepeatEngine.occurrences(task, now.minusDays(1), end)
+        val occDates = RepeatEngine.occurrences(task, now, end)
         for (d in occDates) {
             for (r in task.remindersList) {
                 if (!r.enabled) continue
@@ -42,49 +36,47 @@ object AlarmScheduler {
         }
     }
 
-    fun cancelTaskWindow(context: Context, task: Task, daysAhead: Int = 30) {
-        if (task.startDate.isBlank()) return
-        val now = LocalDate.now()
-        val end = now.plusDays(daysAhead.toLong())
-        val occDates = RepeatEngine.occurrences(task, now.minusDays(1), end)
-        for (d in occDates) {
-            for (r in task.remindersList) {
-                cancelAlarm(context, task.id, d, r.hour, r.minute)
-            }
-        }
-    }
-
-    private fun scheduleAlarm(context: Context, taskId: String, title: String, date: LocalDate, hour: Int, minute: Int) {
+    private fun scheduleAlarm(
+        context: Context,
+        taskId: String,
+        title: String,
+        date: LocalDate,
+        hour: Int,
+        minute: Int
+    ) {
         val trigger = LocalDateTime.of(date.year, date.month, date.dayOfMonth, hour, minute)
         val zone = ZoneId.systemDefault()
         val millis = trigger.atZone(zone).toInstant().toEpochMilli()
         if (millis <= System.currentTimeMillis()) return
 
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val pi = pendingIntent(context, taskId, date, hour, minute, title, PendingIntent.FLAG_UPDATE_CURRENT)
+        val pi = createPendingIntent(context, taskId, date, hour, minute, title)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, millis, pi)
-        } else {
-            am.setExact(AlarmManager.RTC_WAKEUP, millis, pi)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, millis, pi)
+            } else {
+                am.setExact(AlarmManager.RTC_WAKEUP, millis, pi)
+            }
+        } catch (se: SecurityException) {
+            am.set(AlarmManager.RTC_WAKEUP, millis, pi)
         }
     }
 
     private fun cancelAlarm(context: Context, taskId: String, date: LocalDate, hour: Int, minute: Int) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val pi = pendingIntent(context, taskId, date, hour, minute, "", PendingIntent.FLAG_NO_CREATE)
+        val pi = findPendingIntent(context, taskId, date, hour, minute)
         if (pi != null) am.cancel(pi)
     }
 
-    private fun pendingIntent(
+    private fun createPendingIntent(
         context: Context,
         taskId: String,
         date: LocalDate,
         hour: Int,
         minute: Int,
-        title: String,
-        flags: Int
-    ): PendingIntent? {
+        title: String
+    ): PendingIntent {
         val intent = Intent(context, ReminderReceiver::class.java).apply {
             putExtra(EXTRA_TASK_ID, taskId)
             putExtra(EXTRA_TITLE, title)
@@ -93,8 +85,36 @@ object AlarmScheduler {
             putExtra(EXTRA_MIN, minute)
         }
         val requestCode = stableRequestCode(taskId, date.toString(), hour, minute)
-        val finalFlags = flags or PendingIntent.FLAG_IMMUTABLE
-        return PendingIntent.getBroadcast(context, requestCode, intent, finalFlags)
+
+        return PendingIntent.getBroadcast(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    private fun findPendingIntent(
+        context: Context,
+        taskId: String,
+        date: LocalDate,
+        hour: Int,
+        minute: Int
+    ): PendingIntent? {
+        val intent = Intent(context, ReminderReceiver::class.java).apply {
+            putExtra(EXTRA_TASK_ID, taskId)
+            putExtra(EXTRA_DATE, date.toString())
+            putExtra(EXTRA_HOUR, hour)
+            putExtra(EXTRA_MIN, minute)
+        }
+        val requestCode = stableRequestCode(taskId, date.toString(), hour, minute)
+
+        return PendingIntent.getBroadcast(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        )
     }
 
     private fun stableRequestCode(taskId: String, date: String, hour: Int, minute: Int): Int {

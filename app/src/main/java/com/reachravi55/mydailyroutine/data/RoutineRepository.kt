@@ -1,90 +1,95 @@
 package com.reachravi55.mydailyroutine.data
 
 import android.content.Context
+import com.reachravi55.mydailyroutine.alarms.AlarmScheduler
 import com.reachravi55.mydailyroutine.proto.*
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.map
-import java.time.Instant
+import java.time.LocalDate
 
 class RoutineRepository private constructor(private val appContext: Context) {
 
-    private val store = appContext.store()
+    private val store = appContext.routineStore
 
     fun flow(): Flow<RoutineStore> = store.data
 
     suspend fun ensureInitialized() {
-        // No defaults (per your request) — but keep settings message non-null.
         store.updateData { current ->
             if (current.hasSettings()) current
-            else current.toBuilder().setSettings(UserSettings.getDefaultInstance()).build()
+            else current.toBuilder().setSettings(Settings.newBuilder().setNotificationsEnabled(true)).build()
         }
     }
 
-    fun activeListIdFlow(): Flow<String?> = flow().map { s ->
-        s.settings.activeListId.takeIf { it.isNotBlank() }
+    suspend fun createList(name: String): String {
+        val id = Ids.id()
+        store.updateData { current ->
+            val maxOrder = current.listsList.maxOfOrNull { it.sortOrder } ?: 0
+            val list = RoutineList.newBuilder()
+                .setId(id)
+                .setName(name.trim())
+                .setSortOrder(maxOrder + 1)
+                .build()
+            val b = current.toBuilder()
+            b.addLists(list)
+            if (current.activeListId.isBlank()) b.activeListId = id
+            b.build()
+        }
+        return id
     }
 
-    fun listsFlow(): Flow<List<RoutineList>> = flow().map { it.listsList.sortedBy { l -> l.sortOrder } }
-    fun tasksFlow(): Flow<List<Task>> = flow().map { it.tasksList.filter { t -> !t.archived } }
-
-    suspend fun upsertList(list: RoutineList) {
+    suspend fun renameList(listId: String, newName: String) {
         store.updateData { current ->
-            val b = current.toBuilder()
-            val idx = current.listsList.indexOfFirst { it.id == list.id }
-            if (idx >= 0) b.setLists(idx, list) else b.addLists(list)
-            b.build()
+            val idx = current.listsList.indexOfFirst { it.id == listId }
+            if (idx < 0) return@updateData current
+            val updated = current.listsList[idx].toBuilder().setName(newName.trim()).build()
+            current.toBuilder().setLists(idx, updated).build()
         }
     }
 
     suspend fun deleteList(listId: String) {
         store.updateData { current ->
             val b = current.toBuilder()
-            // remove list
-            val newLists = current.listsList.filterNot { it.id == listId }
-            b.clearLists()
-            newLists.forEach { b.addLists(it) }
-            // archive tasks in that list
-            val newTasks = current.tasksList.map { t ->
-                if (t.listId == listId) t.toBuilder().setArchived(true).build() else t
-            }
+            // remove tasks in that list + overrides for those tasks
+            val taskIds = current.tasksList.filter { it.listId == listId }.map { it.id }.toSet()
+
             b.clearTasks()
-            newTasks.forEach { b.addTasks(it) }
+            current.tasksList.filterNot { it.listId == listId }.forEach { b.addTasks(it) }
+
+            b.clearOverrides()
+            current.overridesList.filterNot { taskIds.contains(it.taskId) }.forEach { b.addOverrides(it) }
+
+            b.clearLists()
+            current.listsList.filterNot { it.id == listId }.forEach { b.addLists(it) }
+
+            if (b.activeListId == listId) {
+                b.activeListId = b.listsList.firstOrNull()?.id ?: ""
+            }
             b.build()
         }
     }
 
-    suspend fun setActiveList(listId: String?) {
-        store.updateData { current ->
-            val b = current.toBuilder()
-            val s = (if (current.hasSettings()) current.settings else UserSettings.getDefaultInstance()).toBuilder()
-            s.activeListId = listId ?: ""
-            b.settings = s.build()
-            b.build()
-        }
+    suspend fun setActiveList(listId: String) {
+        store.updateData { it.toBuilder().setActiveListId(listId).build() }
     }
 
     suspend fun upsertTask(task: Task) {
         store.updateData { current ->
             val b = current.toBuilder()
             val idx = current.tasksList.indexOfFirst { it.id == task.id }
-            val withTimes = task.toBuilder()
-                .setUpdatedAtEpochMs(Instant.now().toEpochMilli())
-                .apply {
-                    if (task.createdAtEpochMs == 0L) setCreatedAtEpochMs(Instant.now().toEpochMilli())
-                }
-                .build()
-            if (idx >= 0) b.setTasks(idx, withTimes) else b.addTasks(withTimes)
+            if (idx >= 0) b.setTasks(idx, task) else b.addTasks(task)
             b.build()
         }
+        // reschedule alarms for this task (next 30 days)
+        AlarmScheduler.rescheduleTask(appContext, task, daysAhead = 60)
     }
 
-    suspend fun archiveTask(taskId: String) {
+    suspend fun deleteTask(taskId: String) {
+        val task = store.data // flow; can't read here. We'll just remove and rely on boot to resched.
         store.updateData { current ->
             val b = current.toBuilder()
-            val idx = current.tasksList.indexOfFirst { it.id == taskId }
-            if (idx >= 0) {
-                b.setTasks(idx, current.tasksList[idx].toBuilder().setArchived(true).build())
-            }
+            b.clearTasks()
+            current.tasksList.filterNot { it.id == taskId }.forEach { b.addTasks(it) }
+            b.clearOverrides()
+            current.overridesList.filterNot { it.taskId == taskId }.forEach { b.addOverrides(it) }
             b.build()
         }
     }
@@ -92,9 +97,8 @@ class RoutineRepository private constructor(private val appContext: Context) {
     suspend fun setOccurrence(taskId: String, dateKey: String, completed: Boolean, note: String? = null) {
         store.updateData { current ->
             val b = current.toBuilder()
-            val existingIdx = current.overridesList.indexOfFirst { it.taskId == taskId && it.date == dateKey }
-            val base = if (existingIdx >= 0) current.overridesList[existingIdx] else OccurrenceOverride.getDefaultInstance()
-
+            val idx = current.overridesList.indexOfFirst { it.taskId == taskId && it.date == dateKey }
+            val base = if (idx >= 0) current.overridesList[idx] else OccurrenceOverride.getDefaultInstance()
             val ob = base.toBuilder()
                 .setTaskId(taskId)
                 .setDate(dateKey)
@@ -102,31 +106,26 @@ class RoutineRepository private constructor(private val appContext: Context) {
 
             if (note != null) ob.note = note
 
-            if (existingIdx >= 0) b.setOverrides(existingIdx, ob.build()) else b.addOverrides(ob.build())
+            if (idx >= 0) b.setOverrides(idx, ob.build()) else b.addOverrides(ob.build())
             b.build()
         }
     }
 
-    suspend fun setSubtaskState(taskId: String, dateKey: String, subtaskId: String, completed: Boolean, note: String? = null) {
+    suspend fun setSubtaskOccurrence(taskId: String, dateKey: String, subtaskId: String, completed: Boolean, note: String? = null) {
         store.updateData { current ->
             val b = current.toBuilder()
-            val existingIdx = current.overridesList.indexOfFirst { it.taskId == taskId && it.date == dateKey }
-            val base = if (existingIdx >= 0) current.overridesList[existingIdx] else OccurrenceOverride.getDefaultInstance()
-            val ob = base.toBuilder().setTaskId(taskId).setDate(dateKey)
+            val idx = current.overridesList.indexOfFirst { it.taskId == taskId && it.date == dateKey }
+            val base = if (idx >= 0) current.overridesList[idx] else OccurrenceOverride.newBuilder().setTaskId(taskId).setDate(dateKey).build()
 
-            // upsert subtask state
-            val states = ob.subtaskStatesList.toMutableList()
-            val sIdx = states.indexOfFirst { it.subtaskId == subtaskId }
-            val sb = (if (sIdx >= 0) states[sIdx] else SubtaskState.getDefaultInstance()).toBuilder()
-                .setSubtaskId(subtaskId)
-                .setCompleted(completed)
+            val ob = base.toBuilder()
+            val sIdx = base.subtaskOverridesList.indexOfFirst { it.subtaskId == subtaskId }
+            val sBase = if (sIdx >= 0) base.subtaskOverridesList[sIdx] else SubtaskOverride.getDefaultInstance()
+            val sb = sBase.toBuilder().setSubtaskId(subtaskId).setCompleted(completed)
             if (note != null) sb.note = note
 
-            if (sIdx >= 0) states[sIdx] = sb.build() else states.add(sb.build())
-            ob.clearSubtaskStates()
-            states.forEach { ob.addSubtaskStates(it) }
+            if (sIdx >= 0) ob.setSubtaskOverrides(sIdx, sb.build()) else ob.addSubtaskOverrides(sb.build())
 
-            if (existingIdx >= 0) b.setOverrides(existingIdx, ob.build()) else b.addOverrides(ob.build())
+            if (idx >= 0) b.setOverrides(idx, ob.build()) else b.addOverrides(ob.build())
             b.build()
         }
     }
@@ -134,12 +133,19 @@ class RoutineRepository private constructor(private val appContext: Context) {
     suspend fun clearDay(dateKey: String) {
         store.updateData { current ->
             val b = current.toBuilder()
-            val remaining = current.overridesList.filterNot { it.date == dateKey }
             b.clearOverrides()
-            remaining.forEach { b.addOverrides(it) }
+            current.overridesList.filterNot { it.date == dateKey }.forEach { b.addOverrides(it) }
             b.build()
         }
     }
+
+    suspend fun toggleNotifications(enabled: Boolean) {
+        store.updateData { current ->
+            val s = current.settings.toBuilder().setNotificationsEnabled(enabled).build()
+            current.toBuilder().setSettings(s).build()
+        }
+    }
+
     companion object {
         @Volatile private var INSTANCE: RoutineRepository? = null
         fun get(context: Context): RoutineRepository =
