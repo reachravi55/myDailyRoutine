@@ -11,7 +11,7 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
             CoroutineScope(Dispatchers.IO).launch {
-                // TODO: read DB and reschedule reminders
+                // TODO: load reminders from DB and reschedule alarms
             }
         }
     }

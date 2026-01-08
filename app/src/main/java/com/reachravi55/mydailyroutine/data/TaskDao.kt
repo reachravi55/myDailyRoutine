@@ -1,9 +1,9 @@
 package com.reachravi55.mydailyroutine.data
 
 import androidx.room.Dao
-import androidx.room.Query
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
+import androidx.room.Query
 import com.reachravi55.mydailyroutine.model.TaskTemplate
 
 @Dao

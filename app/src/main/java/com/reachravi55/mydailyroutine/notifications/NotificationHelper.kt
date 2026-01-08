@@ -12,7 +12,7 @@ object NotificationHelper {
             val nm = context.getSystemService(NotificationManager::class.java)
             val ch = NotificationChannel(CHANNEL_ID, "Reminders", NotificationManager.IMPORTANCE_HIGH)
             ch.description = "Notifications for checklist reminders"
-            nm.createNotificationChannel(ch)
+            nm?.createNotificationChannel(ch)
         }
         return CHANNEL_ID
     }
