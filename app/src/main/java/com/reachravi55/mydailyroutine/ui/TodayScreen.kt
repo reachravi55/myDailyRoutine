@@ -19,6 +19,7 @@ import com.reachravi55.mydailyroutine.data.DateUtils
 import com.reachravi55.mydailyroutine.proto.RoutineStore
 import java.time.LocalDate
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TodayScreen(
     store: RoutineStore,
@@ -26,23 +27,19 @@ fun TodayScreen(
     onOpenDay: (LocalDate) -> Unit,
     onNewTask: (listId: String, dateKey: String) -> Unit
 ) {
-    val ctx = LocalContext.current
+    val context = LocalContext.current
     val today = remember { LocalDate.now() }
     val todayKey = remember { DateUtils.formatKey(today) }
 
-    val listsById = remember(store) { store.listsList.associateBy { it.id } }
+    val listsById = remember(store) {
+        store.listsList.associateBy { it.id }
+    }
 
-    // "Active today" view (simple for now):
-    // - tasks that have started on/before today
-    // - not archived
-    // NOTE: Repeat rules can be enhanced later; this keeps Today working + useful.
     val tasksToday = remember(store, todayKey) {
         store.tasksList
-            .asSequence()
             .filter { !it.archived }
             .filter { it.startDate.isBlank() || it.startDate <= todayKey }
             .sortedBy { it.sortOrder }
-            .toList()
     }
 
     fun shareToday() {
@@ -52,22 +49,26 @@ fun TodayScreen(
         if (tasksToday.isEmpty()) {
             sb.append("No tasks scheduled for today.")
         } else {
-            tasksToday.forEach { t ->
-                val listName = listsById[t.listId]?.name ?: "List"
-                sb.append("• ").append(t.title).append(" (").append(listName).append(")\n")
-                if (t.description.isNotBlank()) {
-                    sb.append("  - ").append(t.description.trim()).append("\n")
+            tasksToday.forEach { task ->
+                val listName = listsById[task.listId]?.name ?: "List"
+                sb.append("• ").append(task.title)
+                    .append(" (").append(listName).append(")\n")
+                if (task.description.isNotBlank()) {
+                    sb.append("  - ").append(task.description.trim()).append("\n")
                 }
                 sb.append("\n")
             }
         }
 
-        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+        val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_TEXT, sb.toString().trim())
         }
-        val chooser = Intent.createChooser(sendIntent, "Share Today")
-        ContextCompat.startActivity(ctx, chooser, null)
+        ContextCompat.startActivity(
+            context,
+            Intent.createChooser(intent, "Share Today"),
+            null
+        )
     }
 
     Scaffold(
@@ -76,7 +77,7 @@ fun TodayScreen(
                 title = { Text("Today") },
                 actions = {
                     IconButton(onClick = { onOpenDay(today) }) {
-                        Icon(Icons.Default.CalendarMonth, contentDescription = "Open Today")
+                        Icon(Icons.Default.CalendarMonth, contentDescription = "Open calendar")
                     }
                     IconButton(onClick = { shareToday() }) {
                         Icon(Icons.Default.Share, contentDescription = "Share")
@@ -87,7 +88,10 @@ fun TodayScreen(
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = {
-                    val listId = store.activeListId.ifBlank { store.listsList.firstOrNull()?.id ?: "" }
+                    val listId =
+                        store.activeListId.ifBlank {
+                            store.listsList.firstOrNull()?.id ?: ""
+                        }
                     onNewTask(listId, todayKey)
                 },
                 icon = { Icon(Icons.Default.Add, contentDescription = null) },
@@ -97,39 +101,19 @@ fun TodayScreen(
     ) { inner ->
         Column(
             modifier = Modifier
-                .padding(contentPadding)   // <- space for bottom nav
-                .padding(inner)            // <- space for top bar/fab
+                .padding(contentPadding)
+                .padding(inner)
                 .fillMaxSize()
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column {
-                    Text(
-                        "Today",
-                        style = MaterialTheme.typography.titleLarge
-                    )
-                    Text(
-                        todayKey,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                TextButton(onClick = { onOpenDay(today) }) {
-                    Text("Open day")
-                }
-            }
-
-            Divider()
 
             if (tasksToday.isEmpty()) {
                 EmptyTodayState(
                     dateKey = todayKey,
                     onCreate = {
-                        val listId = store.activeListId.ifBlank { store.listsList.firstOrNull()?.id ?: "" }
+                        val listId =
+                            store.activeListId.ifBlank {
+                                store.listsList.firstOrNull()?.id ?: ""
+                            }
                         onNewTask(listId, todayKey)
                     }
                 )
@@ -139,29 +123,15 @@ fun TodayScreen(
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    item {
-                        Text(
-                            "Tasks",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "Tap “Open day” to check off items and add notes for today.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(8.dp))
-                    }
-
                     items(tasksToday, key = { it.id }) { task ->
                         TaskCard(
                             title = task.title,
-                            subtitle = listsById[task.listId]?.name ?: "List",
+                            listName = listsById[task.listId]?.name ?: "List",
                             description = task.description
                         )
                     }
 
-                    item { Spacer(Modifier.height(90.dp)) }
+                    item { Spacer(Modifier.height(96.dp)) }
                 }
             }
         }
@@ -201,7 +171,7 @@ private fun EmptyTodayState(
 @Composable
 private fun TaskCard(
     title: String,
-    subtitle: String,
+    listName: String,
     description: String
 ) {
     Card(
@@ -217,7 +187,7 @@ private fun TaskCard(
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                subtitle,
+                listName,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
