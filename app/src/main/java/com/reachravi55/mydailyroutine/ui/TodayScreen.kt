@@ -1,13 +1,12 @@
 package com.reachravi55.mydailyroutine.ui
 
+import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -15,62 +14,60 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.reachravi55.mydailyroutine.data.DateUtils
-import com.reachravi55.mydailyroutine.data.RoutineRepository
 import com.reachravi55.mydailyroutine.proto.RoutineStore
-import com.reachravi55.mydailyroutine.proto.Task
-import kotlinx.coroutines.launch
+import java.time.LocalDate
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TodayScreen(
     store: RoutineStore,
-    onNewTask: (dateKey: String) -> Unit,
-    onOpenCalendar: () -> Unit,
-    onOpenLists: () -> Unit,
-    onShareToday: (String) -> Unit
+    contentPadding: PaddingValues,
+    onOpenDay: (LocalDate) -> Unit,
+    onNewTask: (listId: String, dateKey: String) -> Unit
 ) {
     val ctx = LocalContext.current
-    val repo = RoutineRepository.get(ctx)
-    val scope = rememberCoroutineScope()
+    val today = remember { LocalDate.now() }
+    val todayKey = remember { DateUtils.formatKey(today) }
 
-    val todayKey = remember { DateUtils.todayKey() }
+    val listsById = remember(store) { store.listsList.associateBy { it.id } }
 
-    // Tasks "active" for today:
-    // - startDate <= today
+    // "Active today" view (simple for now):
+    // - tasks that have started on/before today
     // - not archived
-    // - and either one-time on today OR repeating (we include repeating tasks always once started)
-    val todayTasks = remember(store, todayKey) {
+    // NOTE: Repeat rules can be enhanced later; this keeps Today working + useful.
+    val tasksToday = remember(store, todayKey) {
         store.tasksList
             .asSequence()
             .filter { !it.archived }
-            .filter { it.startDate <= todayKey }
+            .filter { it.startDate.isBlank() || it.startDate <= todayKey }
             .sortedBy { it.sortOrder }
             .toList()
     }
 
-    val listsById = remember(store) {
-        store.listsList.associateBy { it.id }
-    }
-
-    fun buildShareText(): String {
+    fun shareToday() {
         val sb = StringBuilder()
         sb.append("My Daily Routine — ").append(todayKey).append("\n\n")
-        if (todayTasks.isEmpty()) {
-            sb.append("No tasks scheduled for today.\n")
+
+        if (tasksToday.isEmpty()) {
+            sb.append("No tasks scheduled for today.")
         } else {
-            todayTasks.forEach { t ->
+            tasksToday.forEach { t ->
                 val listName = listsById[t.listId]?.name ?: "List"
-                sb.append("• ").append(t.title)
-                sb.append("  (").append(listName).append(")")
-                sb.append("\n")
+                sb.append("• ").append(t.title).append(" (").append(listName).append(")\n")
                 if (t.description.isNotBlank()) {
                     sb.append("  - ").append(t.description.trim()).append("\n")
                 }
                 sb.append("\n")
             }
         }
-        return sb.toString().trim()
+
+        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, sb.toString().trim())
+        }
+        val chooser = Intent.createChooser(sendIntent, "Share Today")
+        ContextCompat.startActivity(ctx, chooser, null)
     }
 
     Scaffold(
@@ -78,7 +75,10 @@ fun TodayScreen(
             TopAppBar(
                 title = { Text("Today") },
                 actions = {
-                    IconButton(onClick = { onShareToday(buildShareText()) }) {
+                    IconButton(onClick = { onOpenDay(today) }) {
+                        Icon(Icons.Default.CalendarMonth, contentDescription = "Open Today")
+                    }
+                    IconButton(onClick = { shareToday() }) {
                         Icon(Icons.Default.Share, contentDescription = "Share")
                     }
                 }
@@ -86,7 +86,10 @@ fun TodayScreen(
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = { onNewTask(todayKey) },
+                onClick = {
+                    val listId = store.activeListId.ifBlank { store.listsList.firstOrNull()?.id ?: "" }
+                    onNewTask(listId, todayKey)
+                },
                 icon = { Icon(Icons.Default.Add, contentDescription = null) },
                 text = { Text("New task") }
             )
@@ -94,41 +97,41 @@ fun TodayScreen(
     ) { inner ->
         Column(
             modifier = Modifier
-                .padding(inner)
+                .padding(contentPadding)   // <- space for bottom nav
+                .padding(inner)            // <- space for top bar/fab
                 .fillMaxSize()
         ) {
-
-            // Quick actions row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                OutlinedButton(
-                    onClick = onOpenCalendar,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Default.CalendarMonth, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Calendar")
+                Column {
+                    Text(
+                        "Today",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    Text(
+                        todayKey,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
-                OutlinedButton(
-                    onClick = onOpenLists,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Default.ListAlt, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Lists")
+                TextButton(onClick = { onOpenDay(today) }) {
+                    Text("Open day")
                 }
             }
 
             Divider()
 
-            if (todayTasks.isEmpty()) {
-                EmptyStateToday(
+            if (tasksToday.isEmpty()) {
+                EmptyTodayState(
                     dateKey = todayKey,
-                    onCreate = { onNewTask(todayKey) }
+                    onCreate = {
+                        val listId = store.activeListId.ifBlank { store.listsList.firstOrNull()?.id ?: "" }
+                        onNewTask(listId, todayKey)
+                    }
                 )
             } else {
                 LazyColumn(
@@ -138,29 +141,23 @@ fun TodayScreen(
                 ) {
                     item {
                         Text(
-                            "Scheduled tasks",
+                            "Tasks",
                             style = MaterialTheme.typography.titleMedium
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Tap a task to edit it from Calendar. Use Share to send today’s plan.",
+                            "Tap “Open day” to check off items and add notes for today.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(8.dp))
                     }
 
-                    items(todayTasks, key = { it.id }) { task ->
+                    items(tasksToday, key = { it.id }) { task ->
                         TaskCard(
-                            task = task,
-                            listName = listsById[task.listId]?.name ?: "List",
-                            onToggleDone = {
-                                // V2 store doesn’t yet have per-day completion state in proto.
-                                // For now, we just show a “checked” UX signal via a snackbar.
-                                scope.launch {
-                                    repo.showSnackbar(ctx, "Marked “${task.title}” (completion tracking coming next).")
-                                }
-                            }
+                            title = task.title,
+                            subtitle = listsById[task.listId]?.name ?: "List",
+                            description = task.description
                         )
                     }
 
@@ -172,7 +169,7 @@ fun TodayScreen(
 }
 
 @Composable
-private fun EmptyStateToday(
+private fun EmptyTodayState(
     dateKey: String,
     onCreate: () -> Unit
 ) {
@@ -203,40 +200,31 @@ private fun EmptyStateToday(
 
 @Composable
 private fun TaskCard(
-    task: Task,
-    listName: String,
-    onToggleDone: () -> Unit
+    title: String,
+    subtitle: String,
+    description: String
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Column(Modifier.padding(14.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        task.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        listName,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                IconButton(onClick = onToggleDone) {
-                    Icon(Icons.Default.CheckCircle, contentDescription = "Mark done")
-                }
-            }
-
-            if (task.description.isNotBlank()) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (description.isNotBlank()) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    task.description,
+                    description,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
