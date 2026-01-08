@@ -1,6 +1,5 @@
 package com.reachravi55.mydailyroutine
 
-import android.app.AlarmManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -10,7 +9,6 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import java.util.Calendar
 
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -28,7 +26,8 @@ class ReminderReceiver : BroadcastReceiver() {
         }
 
         val open = PendingIntent.getActivity(
-            context, 0,
+            context,
+            0,
             Intent(context, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
@@ -63,56 +62,16 @@ class ReminderReceiver : BroadcastReceiver() {
             }
 
             if (requestCode != 999) {
-                scheduleNextDay(context, hour, minute, requestCode, title, reminderType)
+                // Reuse the same scheduling helper from MainActivity.kt
+                scheduleExactReminder(
+                    context = context,
+                    hour = hour,
+                    minute = minute,
+                    requestCode = requestCode,
+                    title = title,
+                    reminderType = reminderType
+                )
             }
-        }
-    }
-
-    private fun scheduleNextDay(
-        context: Context,
-        hour: Int,
-        minute: Int,
-        requestCode: Int,
-        title: String,
-        reminderType: String
-    ) {
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-
-        val newIntent = Intent(context, ReminderReceiver::class.java).apply {
-            putExtra("title", title)
-            putExtra("reminderType", reminderType)
-            putExtra("hour", hour)
-            putExtra("minute", minute)
-        }
-
-        val pending = PendingIntent.getBroadcast(
-            context,
-            requestCode,
-            newIntent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        val cal = Calendar.getInstance().apply {
-            timeInMillis = System.currentTimeMillis()
-            set(Calendar.HOUR_OF_DAY, hour)
-            set(Calendar.MINUTE, minute)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-            add(Calendar.DAY_OF_MONTH, 1) // always next day
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setExactAndAllowWhileIdle(
-                AlarmManager.RTC_WAKEUP,
-                cal.timeInMillis,
-                pending
-            )
-        } else {
-            alarmManager.setExact(
-                AlarmManager.RTC_WAKEUP,
-                cal.timeInMillis,
-                pending
-            )
         }
     }
 }
