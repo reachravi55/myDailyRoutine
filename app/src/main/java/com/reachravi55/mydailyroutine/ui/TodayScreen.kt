@@ -1,77 +1,103 @@
 package com.reachravi55.mydailyroutine.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Event
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.navigation.NavController
-import com.reachravi55.mydailyroutine.ui.nav.Routes
-import com.reachravi55.mydailyroutine.viewmodel.TodayViewModel
+import com.reachravi55.mydailyroutine.data.DateUtils
+import com.reachravi55.mydailyroutine.data.RepeatEngine
+import com.reachravi55.mydailyroutine.proto.OccurrenceOverride
+import com.reachravi55.mydailyroutine.proto.RoutineList
+import com.reachravi55.mydailyroutine.proto.RoutineStore
 import java.time.LocalDate
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TodayScreen(
-    navController: NavController,
-    vm: TodayViewModel
+    store: RoutineStore,
+    contentPadding: PaddingValues,
+    onOpenDay: (LocalDate) -> Unit,
+    onNewTask: (listId: String, dateKey: String) -> Unit
 ) {
-    val today = remember { LocalDate.now().toString() }
+    val today = LocalDate.now()
+    val dateKey = DateUtils.formatKey(today)
 
-    val lists by vm.lists.collectAsState(initial = emptyList())
-    var selectedListId by rememberSaveable { mutableStateOf("") }
+    val lists = store.listsList.filterNot { it.archived }.sortedBy { it.sortOrder }
+    var filterListId by rememberSaveable { mutableStateOf(store.activeListId) }
+    if (filterListId.isBlank() && lists.isNotEmpty()) filterListId = lists.first().id
 
-    val tasks by vm.todayTasks(selectedListId).collectAsState(initial = emptyList())
+    val visibleTasks = store.tasksList
+        .filter { !it.archived }
+        .filter { filterListId.isBlank() || it.listId == filterListId }
+        .filter { RepeatEngine.occursOn(it, today) }
+        .sortedBy { it.sortOrder }
+
+    val overridesByTask = store.overridesList.filter { it.date == dateKey }.associateBy { it.taskId }
 
     Scaffold(
         topBar = {
-            CenterAlignedTopAppBar(
+            TopAppBar(
                 title = { Text("Today") },
                 actions = {
-                    TextButton(onClick = {
-                        navController.navigate("${Routes.TaskEditor}?date=$today")
-                    }) { Text("New") }
+                    IconButton(onClick = { onOpenDay(today) }) {
+                        Icon(Icons.Default.Event, contentDescription = "Open calendar")
+                    }
                 }
             )
+        },
+        floatingActionButton = {
+            FloatingActionButton(onClick = {
+                val listId = if (filterListId.isNotBlank()) filterListId else store.activeListId
+                onNewTask(listId, dateKey)
+            }) {
+                Icon(Icons.Default.Add, contentDescription = "New task")
+            }
         }
-    ) { pv ->
+    ) { inner ->
         Column(
             modifier = Modifier
+                .padding(contentPadding)
+                .padding(inner)
                 .fillMaxSize()
-                .padding(pv)
-                .padding(16.dp)
         ) {
             if (lists.isNotEmpty()) {
-                FilterChipRow(
-                    lists = lists.map { it.id to it.name },
-                    selectedId = selectedListId,
-                    onSelect = { selectedListId = it }
+                ListFilterRow(
+                    lists = lists,
+                    currentListId = filterListId,
+                    onListSelected = { filterListId = it }
                 )
-                Spacer(Modifier.height(12.dp))
+            } else {
+                SectionHeader("No lists yet")
+                Text(
+                    "Go to Lists to create your first list.",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
-            if (tasks.isEmpty()) {
-                Text("No tasks for today yet.")
+            Spacer(Modifier.height(8.dp))
+
+            if (visibleTasks.isEmpty()) {
+                EmptyState(
+                    title = "Nothing scheduled for today",
+                    subtitle = "Tap + to create a task, or schedule a repeating routine."
+                )
             } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(tasks) { t ->
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    navController.navigate("${Routes.TaskDetail}/${t.id}?date=$today")
-                                }
-                        ) {
-                            Column(Modifier.padding(12.dp)) {
-                                Text(t.title, style = MaterialTheme.typography.titleMedium)
-                                if (t.listName.isNotBlank()) {
-                                    Text(t.listName, style = MaterialTheme.typography.bodySmall)
-                                }
-                            }
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 96.dp)
+                ) {
+                    items(visibleTasks, key = { it.id }) { task ->
+                        val ov: OccurrenceOverride? = overridesByTask[task.id]
+                        Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                            TaskOccurrenceCard(task = task, dateKey = dateKey, override = ov)
                         }
                     }
                 }
@@ -81,22 +107,47 @@ fun TodayScreen(
 }
 
 @Composable
-private fun FilterChipRow(
-    lists: List<Pair<String, String>>,
-    selectedId: String,
-    onSelect: (String) -> Unit
+private fun ListFilterRow(
+    lists: List<RoutineList>,
+    currentListId: String,
+    onListSelected: (String) -> Unit
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        AssistChip(
-            onClick = { onSelect("") },
-            label = { Text("All") }
-        )
-        lists.forEach { (id, name) ->
-            FilterChip(
-                selected = selectedId == id,
-                onClick = { onSelect(id) },
-                label = { Text(name) }
+    var expanded by remember { mutableStateOf(false) }
+    val current = lists.firstOrNull { it.id == currentListId } ?: lists.first()
+
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text("List", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
+            OutlinedTextField(
+                value = current.name,
+                onValueChange = {},
+                readOnly = true,
+                modifier = Modifier.menuAnchor(),
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) }
             )
+            ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                lists.forEach { l ->
+                    DropdownMenuItem(
+                        text = { Text(l.name) },
+                        onClick = {
+                            onListSelected(l.id)
+                            expanded = false
+                        }
+                    )
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun EmptyState(title: String, subtitle: String) {
+    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
+        Text(title, style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(8.dp))
+        Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
