@@ -147,7 +147,37 @@ private const val MORNING_REQ = 101
 private const val AFTERNOON_REQ = 102
 private const val EVENING_REQ = 103
 
-// Schedules a SINGLE exact alarm for each reminder (receiver will re-schedule for next day)
+// Safely try to set an exact alarm, fall back to inexact if OS blocks exact alarms
+fun safeSetExactAlarm(
+    alarmManager: AlarmManager,
+    triggerAtMillis: Long,
+    pendingIntent: PendingIntent
+) {
+    try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                triggerAtMillis,
+                pendingIntent
+            )
+        } else {
+            alarmManager.setExact(
+                AlarmManager.RTC_WAKEUP,
+                triggerAtMillis,
+                pendingIntent
+            )
+        }
+    } catch (e: SecurityException) {
+        // No SCHEDULE_EXACT_ALARM permission or OS blocks exact alarms – fall back to inexact
+        alarmManager.set(
+            AlarmManager.RTC_WAKEUP,
+            triggerAtMillis,
+            pendingIntent
+        )
+    }
+}
+
+// Schedules a SINGLE alarm for each reminder (receiver will re-schedule for next day)
 fun scheduleAllReminders(context: Context, settings: ReminderSettings) {
     scheduleExactReminder(
         context = context,
@@ -208,19 +238,7 @@ fun scheduleExactReminder(
         if (before(now)) add(Calendar.DAY_OF_MONTH, 1)
     }
 
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-        alarmManager.setExactAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
-            cal.timeInMillis,
-            pending
-        )
-    } else {
-        alarmManager.setExact(
-            AlarmManager.RTC_WAKEUP,
-            cal.timeInMillis,
-            pending
-        )
-    }
+    safeSetExactAlarm(alarmManager, cal.timeInMillis, pending)
 }
 
 // helper to trigger ReminderReceiver immediately (for testing)
